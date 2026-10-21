@@ -38,7 +38,10 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Install NDK and CMake
-        run: sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"
 
       - name: Build and test
         run: |
