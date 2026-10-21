@@ -10,6 +10,9 @@ import kotlin.math.floor
 /**
  * Follows a live performance through [lyrics] from periodic speech chunks and extrapolates in between.
  * Time is injected as plain milliseconds; nothing here reads a clock.
+ *
+ * Not thread-safe: [onChunk], [onUserJump] and [snapshot] must all be called from one thread
+ * (e.g. Main); hop there with transcription results before calling [onChunk].
  */
 class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig = TrackerConfig()) {
     private val tokenCount = lyrics.tokens.size
