@@ -24,7 +24,8 @@ android {
         externalNativeBuild {
             cmake {
                 // Debug whisper.cpp is far too slow to use; always build the native code optimised.
-                arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
+                // Flexible page sizes so the .so loads on 16 KB page devices.
+                arguments += listOf("-DCMAKE_BUILD_TYPE=Release", "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON")
             }
         }
     }

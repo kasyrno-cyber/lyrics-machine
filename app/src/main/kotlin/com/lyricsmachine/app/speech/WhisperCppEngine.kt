@@ -26,10 +26,10 @@ class WhisperCppEngine(private val modelFile: File, private val threads: Int) : 
                 mutex.withLock {
                     check(!closed) { "WhisperCppEngine is closed" }
                     if (ctx == 0L) {
-                        ctx = WhisperNative.nativeInit(modelFile.absolutePath)
+                        ctx = loadOrThrowIllegalState { WhisperNative.nativeInit(modelFile.absolutePath) }
                         check(ctx != 0L) { "failed to load whisper model ${modelFile.name}" }
                     }
-                    WhisperNative.nativeTranscribe(ctx, pcm16k, language?.whisperCode, threads)
+                    loadOrThrowIllegalState { WhisperNative.nativeTranscribe(ctx, pcm16k, language?.whisperCode, threads) }
                 }
             } finally {
                 freeIfClosedAndIdle() // close() during this call deferred the free to us
