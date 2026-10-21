@@ -106,7 +106,10 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
         if (words.isEmpty()) return null
         // Back off by the snippet length so a short tail ending just before the anchor stays in this repeat.
         val preferAfter = if (!hasLocked) 0 else maxOf(0, floor(lockAnchorPos).toInt() - words.size)
-        val (from, to) = if (wholeSong) 0 to tokenCount else searchWindow(lineAt(basePos))
+        // Extrapolation can run ahead during line-end pauses, so the back edge is measured from whichever is
+        // earlier: the extrapolated line or the last lock's anchor line. The ahead edge follows extrapolation.
+        val (from, to) = if (wholeSong) 0 to tokenCount
+        else lineAt(basePos).let { cur -> searchWindow(minOf(cur, lineAt(lockAnchorPos)), cur) }
         return Aligner.locate(lyrics, words, from, to, preferAfter)
     }
 

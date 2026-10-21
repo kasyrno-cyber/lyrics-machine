@@ -107,14 +107,15 @@ class LiveTrackerTest {
 
     @Test fun `goes lost after 10s without lock and reacquires anywhere`() {
         val t = tracker()
-        t.onChunk(1_000, say(opening), audioPresent = true)
+        // Anchor 27 is on line 5; the window's back edge is one lyric line before it (line 4).
+        assertEquals(27.0, t.onChunk(1_000, say("stones remember every footstep"), audioPresent = true).tokenPosition, 1e-9)
         for (now in listOf(3_000L, 5_000L, 7_000L)) {
             assertEquals(TrackerState.Coasting, t.onChunk(now, say(noise), audioPresent = true).state)
         }
         // 8 s since lock: the opening line is behind the search window, so it cannot lock yet.
         val notYet = t.onChunk(9_000, say(opening), audioPresent = true)
         assertEquals(TrackerState.Coasting, notYet.state)
-        assertTrue(notYet.lineIndex >= 2)
+        assertTrue(notYet.lineIndex >= 4)
         assertEquals(TrackerState.Lost, t.onChunk(11_000, say(noise), audioPresent = true).state)
         val back = t.onChunk(13_000, say(opening), audioPresent = true)
         assertEquals(TrackerState.Locked, back.state)
@@ -175,6 +176,15 @@ class LiveTrackerTest {
         val s2 = t2.onChunk(1_000, say("night we"), audioPresent = true)
         assertEquals(21.0, s2.tokenPosition, 1e-9) // chorus 2, not chorus 3 (31)
         assertEquals(3, s2.lineIndex)
+
+        // Reviewer's timing: 2 s later extrapolation has reached line 5, but the window still reaches back
+        // to the anchor's line, so the tail stays in chorus 2.
+        val t3 = tracker()
+        t3.onChunk(0, say("carry me home over the hills $chorus"), audioPresent = true)
+        assertEquals(22.0, t3.onChunk(2_000, say("we sing"), audioPresent = true).tokenPosition, 1e-9)
+        val t4 = tracker()
+        t4.onChunk(0, say("carry me home over the hills light the night we sing"), audioPresent = true)
+        assertEquals(21.0, t4.onChunk(2_000, say("night we"), audioPresent = true).tokenPosition, 1e-9)
     }
 
     @Test fun `weak windowed match more than one lyric line ahead does not lock`() {
@@ -195,6 +205,66 @@ class LiveTrackerTest {
         val s = LiveTracker(l).onChunk(2_000, say("kupu kupu terbang tinggi"), audioPresent = true)
         assertEquals(TrackerState.Locked, s.state)
         assertEquals(3.0, s.tokenPosition, 1e-9)
+    }
+
+    @Test fun `overlapping windows with line pauses never jump to a later chorus repeat`() {
+        // Original lyric: a three-line chorus (with an internal repeat) sung three times.
+        val l = LyricsParser.parse(
+            """
+            walking down the empty street
+            counting every stone
+            hold me now
+            hold me now
+            we will rise again
+            the morning finds us here
+            waiting by the open door
+            hold me now
+            hold me now
+            we will rise again
+            hold me now
+            hold me now
+            we will rise again
+            """.trimIndent()
+        )
+        val repeatStarts = listOf(2, 7, 10)
+        fun repeatOf(line: Int): Int = repeatStarts.indexOfLast { it <= line } // -1 before the first chorus
+        fun inRepeat(line: Int): Boolean = line in 2..4 || line >= 7
+
+        data class Sung(val text: String, val line: Int, val startMs: Long, val endMs: Long)
+        for (gapMs in listOf(800L, 1_500L, 2_500L)) for (dropEvery in listOf(0, 7, 10)) {
+            val sung = ArrayList<Sung>()
+            var t = 3_000L
+            var k = 0
+            for (line in l.lines) {
+                for (w in line.words) {
+                    if (dropEvery == 0 || ++k % dropEvery != 0) sung += Sung(w.display, line.index, t, t + 350)
+                    t += 500
+                }
+                t += gapMs
+            }
+            val end = t + 4_000
+            val tracker = LiveTracker(l)
+            var nextWindowEnd = 2_000L
+            val latencyMs = 1_000L
+            var now = 2_000L
+            while (now < end) {
+                if (now == nextWindowEnd + latencyMs) {
+                    // Each chunk carries the words of the last 4 s of audio, delivered 1 s late.
+                    val heard = sung.filter { it.endMs > nextWindowEnd - 4_000 && it.startMs < nextWindowEnd }
+                        .map { HeardWord(it.text, it.startMs, it.endMs, 0.9f) }
+                    tracker.onChunk(now, heard, audioPresent = true)
+                    nextWindowEnd += 2_000
+                }
+                val trueLine = sung.lastOrNull { it.startMs <= now }?.line
+                val shown = tracker.snapshot(now)
+                if (trueLine != null && shown.state != TrackerState.Listening && inRepeat(shown.lineIndex)) {
+                    // Coasting may lead the singer into the next repeat by at most maxCoastLines lines.
+                    val ahead = repeatOf(shown.lineIndex) > repeatOf(trueLine) && shown.lineIndex - trueLine > 2
+                    assertTrue(!ahead, "gap=$gapMs drop=$dropEvery t=$now sung line $trueLine, shown $shown")
+                }
+                now += 100
+            }
+        }
     }
 
     @Test fun `user jump overrides position`() {
