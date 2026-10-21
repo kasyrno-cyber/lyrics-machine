@@ -50,10 +50,11 @@ fun AnalyseScreen(
             initializer {
                 AnalyseViewModel(
                     songId = songId,
-                    observe = { AnalysisWork.observe(app, it) },
+                    observeById = { AnalysisWork.observeById(app, it) },
                     enqueue = { AnalysisWork.enqueue(app, it) },
+                    enqueueIfIdle = { AnalysisWork.enqueueIfIdle(app, it) },
                     cancel = { AnalysisWork.cancel(app, it) },
-                    hasActiveWork = { AnalysisWork.hasActiveWork(app, it) },
+                    activeWorkId = { AnalysisWork.activeWorkId(app, it) },
                     hasAnalysis = { container.songRepository.analysis(it) != null },
                     modelState = container.anyModelState(),
                 )

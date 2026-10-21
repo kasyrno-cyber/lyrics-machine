@@ -1,6 +1,5 @@
 package com.lyricsmachine.app
 
-import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,7 +11,11 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavOptionsBuilder
@@ -46,31 +49,51 @@ object Routes {
     const val LIBRARY = "library"
     const val EDIT = "edit?songId={songId}"
     const val ANALYSE = "analyse/{songId}"
-    const val SING = "sing/{songId}"
-    const val SETUP = "setup?next={next}"
+    const val SING = "sing/{songId}?manual={manual}"
+    const val SETUP = "setup?kind={kind}&songId={songId}"
+
+    const val KIND_ANALYSE = "analyse"
+    const val KIND_SING = "sing"
 
     fun edit(songId: Long = -1L) = "edit?songId=$songId"
     fun analyse(songId: Long) = "analyse/$songId"
-    fun sing(songId: Long) = "sing/$songId"
 
-    /** Model setup that continues to [next] (a route) once a speech model is ready. */
-    fun setup(next: String) = "setup?next=${Uri.encode(next)}"
+    /** [manual] asks the sing screen for lyrics viewing only, with no speech model. */
+    fun sing(songId: Long, manual: Boolean = false) = "sing/$songId?manual=$manual"
+
+    /** Model setup that continues to the [kind] screen ("analyse" or "sing") for [songId] once a model is ready. */
+    fun setup(kind: String, songId: Long) = "setup?kind=$kind&songId=$songId"
 }
 
 @Composable
 private fun AppNav(container: AppContainer) {
     val nav = rememberNavController()
     val scope = rememberCoroutineScope()
+    var gating by remember { mutableStateOf(false) }
 
-    /** Navigates to [target], or to the model setup screen first when [needsModel] says a model is missing. */
-    fun go(target: String, needsModel: suspend () -> Boolean = { true }, options: NavOptionsBuilder.() -> Unit = {}) {
+    /**
+     * Opens the [kind] screen for [songId], or the model setup screen first when [needsModel] says a model is
+     * missing. Ignores taps while a previous check is still running.
+     */
+    fun go(kind: String, songId: Long, needsModel: suspend () -> Boolean = { true }, options: NavOptionsBuilder.() -> Unit = {}) {
+        if (gating) return
+        gating = true
         scope.launch {
-            val setup = needsModel() && container.needsModelSetup()
-            nav.navigate(if (setup) Routes.setup(target) else target, options)
+            try {
+                val setup = needsModel() && container.needsModelSetup()
+                val route = when {
+                    setup -> Routes.setup(kind, songId)
+                    kind == Routes.KIND_SING -> Routes.sing(songId)
+                    else -> Routes.analyse(songId)
+                }
+                nav.navigate(route, options)
+            } finally {
+                gating = false
+            }
         }
     }
     fun goSing(id: Long, options: NavOptionsBuilder.() -> Unit = {}) =
-        go(Routes.sing(id), needsModel = { container.singNeedsModel(id) }, options = options)
+        go(Routes.KIND_SING, id, needsModel = { container.singNeedsModel(id) }, options = options)
 
     NavHost(navController = nav, startDestination = Routes.LIBRARY) {
         composable(Routes.LIBRARY) {
@@ -91,7 +114,7 @@ private fun AppNav(container: AppContainer) {
                 onBack = { nav.popBackStack() },
                 onSavedLyricsOnly = { nav.popBackStack() },
                 onNeedsAnalysis = { id ->
-                    go(Routes.analyse(id)) { popUpTo(Routes.LIBRARY) }
+                    go(Routes.KIND_ANALYSE, id) { popUpTo(Routes.LIBRARY) }
                 },
             )
         }
@@ -107,27 +130,44 @@ private fun AppNav(container: AppContainer) {
                 onEditLyrics = { nav.navigate(Routes.edit(id)) { popUpTo(Routes.ANALYSE) { inclusive = true } } },
                 // The setup screen continues back to this analysis, which then starts again.
                 onNeedsModel = {
-                    nav.navigate(Routes.setup(Routes.analyse(id))) { popUpTo(Routes.ANALYSE) { inclusive = true } }
+                    nav.navigate(Routes.setup(Routes.KIND_ANALYSE, id)) { popUpTo(Routes.ANALYSE) { inclusive = true } }
                 },
                 onLeave = { nav.popBackStack(Routes.LIBRARY, inclusive = false) },
             )
         }
         composable(
             Routes.SETUP,
-            arguments = listOf(navArgument("next") { type = NavType.StringType; nullable = true; defaultValue = null }),
+            arguments = listOf(
+                navArgument("kind") { type = NavType.StringType; defaultValue = Routes.KIND_ANALYSE },
+                navArgument("songId") { type = NavType.LongType; defaultValue = -1L },
+            ),
         ) { entry ->
-            val next = entry.arguments?.getString("next")
+            val kind = entry.arguments?.getString("kind") ?: Routes.KIND_ANALYSE
+            val id = entry.arguments?.getLong("songId") ?: -1L
             ModelSetupScreen(
                 container = container,
+                showLyricsOnly = kind == Routes.KIND_SING && id >= 0,
                 onContinue = {
-                    nav.navigate(next?.takeIf { it.isNotBlank() } ?: Routes.LIBRARY) {
-                        popUpTo(Routes.SETUP) { inclusive = true }
+                    val route = when {
+                        id < 0 -> Routes.LIBRARY
+                        kind == Routes.KIND_SING -> Routes.sing(id)
+                        else -> Routes.analyse(id)
                     }
+                    nav.navigate(route) { popUpTo(Routes.SETUP) { inclusive = true } }
+                },
+                onLyricsOnly = {
+                    nav.navigate(Routes.sing(id, manual = true)) { popUpTo(Routes.SETUP) { inclusive = true } }
                 },
                 onBack = { nav.popBackStack() },
             )
         }
-        composable(Routes.SING) { PlaceholderScreen("sing") }
+        composable(
+            Routes.SING,
+            arguments = listOf(
+                navArgument("songId") { type = NavType.LongType },
+                navArgument("manual") { type = NavType.BoolType; defaultValue = false },
+            ),
+        ) { PlaceholderScreen("sing") }
     }
 }
 

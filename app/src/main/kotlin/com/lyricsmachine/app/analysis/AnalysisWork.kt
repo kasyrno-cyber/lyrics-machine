@@ -17,21 +17,42 @@ data class AnalysisUiState(val progress: Float, val result: AnalysisResult?)
 object AnalysisWork {
     fun uniqueName(songId: Long) = "analyse-$songId"
 
+    private fun request(songId: Long) = OneTimeWorkRequestBuilder<AnalysisWorker>()
+        .setInputData(workDataOf(AnalysisWorker.KEY_SONG_ID to songId))
+        .build()
+
+    /** Starts a fresh run, replacing any earlier one. Returns the id of the new run. */
     fun enqueue(context: Context, songId: Long): UUID {
-        val request = OneTimeWorkRequestBuilder<AnalysisWorker>()
-            .setInputData(workDataOf(AnalysisWorker.KEY_SONG_ID to songId))
-            .build()
+        val request = request(songId)
         WorkManager.getInstance(context).enqueueUniqueWork(uniqueName(songId), ExistingWorkPolicy.REPLACE, request)
         return request.id
+    }
+
+    /**
+     * Starts a run only when none is active (KEEP). Returns the id of the run that is active afterwards,
+     * which is another caller's run if it won the race.
+     */
+    suspend fun enqueueIfIdle(context: Context, songId: Long): UUID {
+        val request = request(songId)
+        val wm = WorkManager.getInstance(context)
+        wm.enqueueUniqueWork(uniqueName(songId), ExistingWorkPolicy.KEEP, request)
+        return activeWorkId(context, songId) ?: request.id
     }
 
     fun cancel(context: Context, songId: Long) {
         WorkManager.getInstance(context).cancelUniqueWork(uniqueName(songId))
     }
 
-    /** True while unique work for [songId] is ENQUEUED, RUNNING or BLOCKED. */
-    suspend fun hasActiveWork(context: Context, songId: Long): Boolean =
-        WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(uniqueName(songId)).first().any { isActive(it.state) }
+    /** Id of the ENQUEUED, RUNNING or BLOCKED run for [songId], if any. */
+    suspend fun activeWorkId(context: Context, songId: Long): UUID? =
+        WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(uniqueName(songId)).first()
+            .firstOrNull { isActive(it.state) }?.id
+
+    /** Observes one specific run, never an earlier run that shares the unique name. */
+    fun observeById(context: Context, id: UUID): Flow<AnalysisUiState> =
+        WorkManager.getInstance(context).getWorkInfoByIdFlow(id).map { info ->
+            if (info == null) AnalysisUiState(0f, null) else toUiState(info.state, info.progress, info.outputData)
+        }
 
     internal fun isActive(state: WorkInfo.State) =
         state == WorkInfo.State.ENQUEUED || state == WorkInfo.State.RUNNING || state == WorkInfo.State.BLOCKED

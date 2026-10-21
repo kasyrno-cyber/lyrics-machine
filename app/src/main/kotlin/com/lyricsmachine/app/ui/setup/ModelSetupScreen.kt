@@ -41,6 +41,8 @@ private fun megabytes(bytes: Long) = "%.0f MB".format(bytes / 1_000_000.0)
 @Composable
 fun ModelSetupScreen(
     container: AppContainer,
+    showLyricsOnly: Boolean,
+    onLyricsOnly: () -> Unit,
     onContinue: () -> Unit,
     onBack: () -> Unit,
 ) {
@@ -102,6 +104,11 @@ fun ModelSetupScreen(
                     }
                     ModelState.Missing ->
                         Button(onClick = vm::download, modifier = Modifier.heightIn(min = 48.dp)) { Text("Download") }
+                }
+                if (showLyricsOnly) {
+                    TextButton(onClick = onLyricsOnly, modifier = Modifier.heightIn(min = 48.dp)) {
+                        Text("Just show the lyrics")
+                    }
                 }
                 if (state.model !is ModelState.Downloading && state.model !is ModelState.Ready) {
                     TextButton(onClick = vm::useSmallerModel, modifier = Modifier.heightIn(min = 48.dp)) {

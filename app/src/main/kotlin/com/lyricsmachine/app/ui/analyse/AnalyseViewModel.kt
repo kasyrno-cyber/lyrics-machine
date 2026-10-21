@@ -6,12 +6,14 @@ import com.lyricsmachine.app.analysis.AnalysisError
 import com.lyricsmachine.app.analysis.AnalysisResult
 import com.lyricsmachine.app.analysis.AnalysisUiState
 import com.lyricsmachine.app.speech.ModelState
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.util.UUID
 import kotlin.coroutines.cancellation.CancellationException
 
 object AnalyseCopy {
@@ -46,10 +48,15 @@ data class AnalyseScreenState(
 
 class AnalyseViewModel(
     private val songId: Long,
-    private val observe: (Long) -> Flow<AnalysisUiState>,
-    private val enqueue: (Long) -> Unit,
+    /** Observes exactly one run, so results of earlier runs for the same song are never seen. */
+    private val observeById: (UUID) -> Flow<AnalysisUiState>,
+    /** Starts a fresh run, replacing any earlier one. Used by [retry]. */
+    private val enqueue: (Long) -> UUID,
+    /** Starts a run only if none is active (KEEP); returns the id of the run that is active afterwards. */
+    private val enqueueIfIdle: suspend (Long) -> UUID,
     private val cancel: (Long) -> Unit,
-    private val hasActiveWork: suspend (Long) -> Boolean,
+    /** Id of the ENQUEUED/RUNNING/BLOCKED run for this song, if any. */
+    private val activeWorkId: suspend (Long) -> UUID?,
     private val hasAnalysis: suspend (Long) -> Boolean,
     /** Reports whether any speech model is available; used to resume after the setup screen. */
     private val modelState: Flow<ModelState>,
@@ -57,51 +64,53 @@ class AnalyseViewModel(
     private val _state = MutableStateFlow(AnalyseScreenState())
     val state: StateFlow<AnalyseScreenState> = _state.asStateFlow()
 
+    private var observeJob: Job? = null
+
     init {
         viewModelScope.launch {
-            // An enqueue that failed during save, or was lost with the process, is retried here.
-            if (!safely { hasActiveWork(songId) } && !safely { hasAnalysis(songId) }) startWork()
-            observe(songId).collect { apply(it) }
+            val active = safely { activeWorkId(songId) }
+            when {
+                active != null -> follow(active)
+                // A finished analysis exists and nothing is running: nothing to wait for.
+                safely { hasAnalysis(songId) } == true -> _state.update {
+                    it.copy(progress = 1f, phase = AnalysePhase.Done, canContinue = true, event = it.event ?: AnalyseEvent.OpenSing)
+                }
+                // An enqueue that failed during save, or was lost with the process, is redone here.
+                else -> startWork { enqueueIfIdle(songId) }
+            }
         }
         viewModelScope.launch {
             modelState.collect { m ->
-                modelReady = m is ModelState.Ready
-                val phase = _state.value.phase
-                if (m is ModelState.Ready && phase == AnalysePhase.Error(AnalyseErrorKind.MODEL_MISSING)) retry()
+                if (m is ModelState.Ready && _state.value.phase == AnalysePhase.Error(AnalyseErrorKind.MODEL_MISSING)) retry()
             }
         }
     }
 
-    private var modelReady = false
-    private var staleRetried = false
-
-    private suspend fun safely(block: suspend () -> Boolean): Boolean = try {
+    private suspend fun <T> safely(block: suspend () -> T): T? = try {
         block()
     } catch (e: CancellationException) {
         throw e
     } catch (_: Exception) {
-        false
+        null
     }
 
-    private fun startWork() {
-        try {
-            enqueue(songId)
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Exception) {
+    private fun follow(id: UUID) {
+        observeJob?.cancel()
+        observeJob = viewModelScope.launch { observeById(id).collect { apply(it) } }
+    }
+
+    private suspend fun startWork(start: suspend () -> UUID) {
+        val id = safely(start)
+        if (id == null) {
             _state.update { it.copy(phase = AnalysePhase.Error(AnalyseErrorKind.ENGINE_FAILED), canContinue = true) }
+        } else {
+            follow(id)
         }
     }
 
     private fun apply(ui: AnalysisUiState) {
         val progress = ui.progress.coerceIn(0f, 1f)
         val result = ui.result
-        // A "model missing" result while a model is ready is a leftover of earlier work: run again once.
-        if (result == AnalysisResult.Error(AnalysisError.MODEL_MISSING) && modelReady && !staleRetried) {
-            staleRetried = true
-            retry()
-            return
-        }
         _state.update { s ->
             when (result) {
                 null -> s.copy(progress = progress, phase = AnalysePhase.Running, canContinue = false)
@@ -134,7 +143,7 @@ class AnalyseViewModel(
     /** Starts the analysis again (after a failure, a cancel, or once the model is downloaded). */
     fun retry() {
         _state.update { it.copy(progress = 0f, phase = AnalysePhase.Running, canContinue = false) }
-        startWork()
+        viewModelScope.launch { startWork { enqueue(songId) } }
     }
 
     fun onEventHandled() = _state.update { it.copy(event = null) }
