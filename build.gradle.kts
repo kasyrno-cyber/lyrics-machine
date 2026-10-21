@@ -12,6 +12,7 @@ buildscript {
         if (hasAndroidSdk) {
             classpath(libs.android.gradle.plugin)
             classpath(libs.compose.compiler.gradle.plugin)
+            classpath(libs.ksp.gradle.plugin)
         }
     }
 }
