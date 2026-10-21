@@ -162,8 +162,12 @@ LiveTracker → current line → Sing screen.
 - Media3 ExoPlayer (+ MediaExtractor/MediaCodec for decoding)
 - Room, Kotlin coroutines/Flow, WorkManager
 - minSdk 26 (Android 8.0), targetSdk current
-- Gradle with version catalog; single-module app with packages per component
-  (`lyrics`, `speech`, `align`, `tracker`, `playback`, `store`, `ui`)
+- Gradle with version catalog; two modules:
+  - `core` — pure Kotlin/JVM, no Android dependencies: lyrics parsing,
+    alignment, live tracking, timing lookup, audio utilities, the
+    `SpeechEngine` interface. Fully unit-testable on any JVM.
+  - `app` — Android: UI, Room store, whisper.cpp JNI engine, audio decode,
+    mic capture, playback, analysis worker. Depends on `core`.
 
 ## 8. Testing
 
