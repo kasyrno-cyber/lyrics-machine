@@ -9,6 +9,14 @@ import com.lyricsmachine.core.align.LineTiming
 import com.lyricsmachine.core.align.WordTiming
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.toList
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -30,7 +38,7 @@ class SongRepositoryTest {
     @Before fun setUp() {
         val ctx = ApplicationProvider.getApplicationContext<Context>()
         db = Room.inMemoryDatabaseBuilder(ctx, AppDatabase::class.java).allowMainThreadQueries().build()
-        repo = SongRepository(db) { readable }
+        repo = SongRepository(db, UnconfinedTestDispatcher()) { readable }
     }
 
     @After fun tearDown() { db.close() }
@@ -92,7 +100,9 @@ class SongRepositoryTest {
     @Test fun `editing lyrics clears timings`() = runBlocking {
         val id = repo.upsert(song())
         repo.saveAlignment(id, alignment, "base")
+        assertEquals(5, db.songDao().timings(id).size)
         repo.upsert(repo.get(id)!!.copy(lyricsText = "a brand new line"))
+        assertTrue(db.songDao().timings(id).isEmpty())
         assertTrue(repo.loadTimings(id).first.isEmpty())
         assertNull(repo.analysis(id))
         assertEquals(SongMode.AUDIO_NOT_ANALYSED, repo.observeLibrary().first().single().mode)
@@ -103,7 +113,9 @@ class SongRepositoryTest {
         repo.saveAlignment(id, alignment, "base")
         repo.upsert(repo.get(id)!!.copy(title = "Renamed"))
         assertEquals(2, repo.loadTimings(id).first.size)
+        assertEquals(5, db.songDao().timings(id).size)
         repo.upsert(repo.get(id)!!.copy(audioUri = "content://x/2"))
+        assertTrue(db.songDao().timings(id).isEmpty())
         assertTrue(repo.loadTimings(id).first.isEmpty())
         assertNull(repo.analysis(id))
     }
@@ -132,10 +144,39 @@ class SongRepositoryTest {
     @Test fun `delete removes timings`() = runBlocking {
         val id = repo.upsert(song())
         repo.saveAlignment(id, alignment, "base")
+        assertEquals(5, db.songDao().timings(id).size)
         repo.delete(id)
+        assertTrue(db.songDao().timings(id).isEmpty())
         assertNull(repo.get(id))
         assertNull(repo.analysis(id))
         assertTrue(repo.loadTimings(id).first.isEmpty())
         assertTrue(repo.observeLibrary().first().isEmpty())
+    }
+
+    @Test fun `analysis with zero lines still falls back to lrc timings`() = runBlocking {
+        val id = repo.upsert(song(lyrics = "[00:01.00]blue river walks\n[00:05.00]over quiet stones"))
+        repo.saveAlignment(id, Alignment(emptyList(), emptyList(), 0.0), "base")
+        assertNotNull(repo.analysis(id))
+        assertEquals(listOf(LineTiming(0, 1000, 5000), LineTiming(1, 5000, 9000)), repo.loadTimings(id).first)
+        assertEquals(SongMode.AUDIO_READY, repo.observeLibrary().first().single().mode)
+    }
+
+    @Test fun `library flow re-emits across upsert, saveAlignment and delete`() = runBlocking {
+        val seen = mutableListOf<SongMode?>()
+        val job = launch(Dispatchers.Default) {
+            repo.observeLibrary().map { it.singleOrNull()?.mode }.distinctUntilChanged().toList(seen)
+        }
+        suspend fun awaitLast(expected: SongMode?) = withTimeout(10_000) {
+            while (synchronized(seen) { seen.lastOrNull() } != expected || seen.isEmpty()) delay(20)
+        }
+        awaitLast(null)
+        val id = repo.upsert(song())
+        awaitLast(SongMode.AUDIO_NOT_ANALYSED)
+        repo.saveAlignment(id, alignment, "base")
+        awaitLast(SongMode.AUDIO_READY)
+        repo.delete(id)
+        awaitLast(null)
+        job.cancel()
+        assertEquals(listOf(null, SongMode.AUDIO_NOT_ANALYSED, SongMode.AUDIO_READY, null), seen.toList())
     }
 }

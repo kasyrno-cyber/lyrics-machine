@@ -5,7 +5,7 @@ import android.net.Uri
 import androidx.room.Room
 import com.lyricsmachine.app.store.AppDatabase
 import com.lyricsmachine.app.store.SongRepository
-import java.io.FileNotFoundException
+import kotlin.coroutines.cancellation.CancellationException
 
 /** Manual DI container; services are added by later tasks. */
 class AppContainer(val applicationContext: Context) {
@@ -14,14 +14,14 @@ class AppContainer(val applicationContext: Context) {
     }
 
     val songRepository: SongRepository by lazy {
-        SongRepository(database, ::isUriReadable)
+        SongRepository(database, uriReadable = ::isUriReadable)
     }
 
     private fun isUriReadable(uri: String): Boolean = try {
         applicationContext.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { true } ?: false
-    } catch (_: SecurityException) {
-        false
-    } catch (_: FileNotFoundException) {
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
         false
     }
 }

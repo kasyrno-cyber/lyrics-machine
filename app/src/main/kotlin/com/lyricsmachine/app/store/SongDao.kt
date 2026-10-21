@@ -14,9 +14,6 @@ interface SongDao {
     @Query("SELECT DISTINCT songId FROM TimingEntity")
     fun observeTimedSongIds(): Flow<List<Long>>
 
-    @Query("SELECT songId FROM AnalysisEntity")
-    fun observeAnalysedSongIds(): Flow<List<Long>>
-
     @Query("SELECT * FROM SongEntity WHERE id = :id")
     suspend fun get(id: Long): SongEntity?
 
