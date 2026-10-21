@@ -18,6 +18,8 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.lyricsmachine.app.ui.edit.EditSongScreen
+import com.lyricsmachine.app.ui.library.LibraryScreen
 import com.lyricsmachine.app.ui.theme.LyricsMachineTheme
 
 class MainActivity : ComponentActivity() {
@@ -28,7 +30,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             LyricsMachineTheme {
-                AppNav()
+                AppNav(container)
             }
         }
     }
@@ -36,26 +38,41 @@ class MainActivity : ComponentActivity() {
 
 object Routes {
     const val LIBRARY = "library"
-    const val EDIT = "edit/{songId}"
+    const val EDIT = "edit?songId={songId}"
     const val ANALYSE = "analyse/{songId}"
     const val SING = "sing/{songId}"
+
+    fun edit(songId: Long = -1L) = "edit?songId=$songId"
+    fun analyse(songId: Long) = "analyse/$songId"
+    fun sing(songId: Long) = "sing/$songId"
 }
 
 @Composable
-private fun AppNav() {
+private fun AppNav(container: AppContainer) {
     val nav = rememberNavController()
     NavHost(navController = nav, startDestination = Routes.LIBRARY) {
-        composable(Routes.LIBRARY) { PlaceholderScreen("Library") }
+        composable(Routes.LIBRARY) {
+            LibraryScreen(
+                container = container,
+                onOpenSong = { nav.navigate(Routes.sing(it)) },
+                onAddSong = { nav.navigate(Routes.edit()) },
+                onEditSong = { nav.navigate(Routes.edit(it)) },
+            )
+        }
         composable(
             Routes.EDIT,
-            arguments = listOf(
-                navArgument("songId") {
-                    type = NavType.StringType
-                    nullable = true
-                    defaultValue = null
+            arguments = listOf(navArgument("songId") { type = NavType.LongType; defaultValue = -1L }),
+        ) { entry ->
+            EditSongScreen(
+                container = container,
+                songId = entry.arguments?.getLong("songId") ?: -1L,
+                onBack = { nav.popBackStack() },
+                onSavedLyricsOnly = { nav.popBackStack() },
+                onNeedsAnalysis = { id ->
+                    nav.navigate(Routes.analyse(id)) { popUpTo(Routes.LIBRARY) }
                 },
-            ),
-        ) { PlaceholderScreen("edit") }
+            )
+        }
         composable(Routes.ANALYSE) { PlaceholderScreen("analyse") }
         composable(Routes.SING) { PlaceholderScreen("sing") }
     }
