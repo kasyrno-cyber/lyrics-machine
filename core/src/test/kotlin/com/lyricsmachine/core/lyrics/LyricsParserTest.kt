@@ -59,10 +59,12 @@ class LyricsParserTest {
         assertEquals(1, l.tokens[1].wordIndex)
     }
 
-    @Test fun `line of only symbols is not a spacer but has no tokens`() {
-        val l = LyricsParser.parse("🎵🎵\nhi")
-        assertEquals(false, l.lines[0].isSpacer); assertEquals(1, l.tokens.size)
+    @Test fun `token-less lines are spacers and isSpacer matches firstTokenOfLine`() {
+        val l = LyricsParser.parse("🎵🎵\nhi\n...\n- - -\n[Verse]\n\nyo")
+        assertEquals(listOf(true, false, true, true, true, true, false), l.lines.map { it.isSpacer })
+        assertEquals(2, l.tokens.size)
         assertNull(l.firstTokenOfLine(0)); assertEquals(0, l.firstTokenOfLine(1))
+        for (line in l.lines) assertEquals(line.isSpacer, l.firstTokenOfLine(line.index) == null)
     }
 
     @Test fun `lineOfToken maps back`() {

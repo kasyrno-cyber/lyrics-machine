@@ -22,7 +22,7 @@ object LyricsParser {
             val text = if (ts != null) trimmed.substring(ts.value.length) else trimmed
             val spacer = text.isBlank() || SPACER.matches(text)
             val words = if (spacer) emptyList() else toWords(text)
-            lines += LyricLine(lines.size, words, spacer, startMs)
+            lines += LyricLine(lines.size, words, spacer || words.isEmpty(), startMs)
         }
         return Lyrics(lines)
     }

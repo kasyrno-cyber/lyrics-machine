@@ -33,6 +33,6 @@ data class Lyrics(val lines: List<LyricLine>) {
     /** Line index of the token at [tokenIndex]; throws [IndexOutOfBoundsException] if out of range. */
     fun lineOfToken(tokenIndex: Int): Int = tokens[tokenIndex].lineIndex
 
-    /** Index into [tokens] of the first token of [lineIndex]; null for spacer / token-less lines. */
+    /** Index into [tokens] of the first token of [lineIndex]; null for spacer lines (lines with no tokens are always spacers). */
     fun firstTokenOfLine(lineIndex: Int): Int? = firstTokenByLine[lineIndex]
 }
