@@ -15,14 +15,11 @@ import androidx.work.workDataOf
 import com.lyricsmachine.app.AppContainer
 import com.lyricsmachine.app.LyricsMachineApp
 import com.lyricsmachine.app.audio.AudioDecoder
-import com.lyricsmachine.app.speech.ModelManager
 import com.lyricsmachine.app.speech.ModelSpec
 import com.lyricsmachine.app.speech.ModelState
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
@@ -48,7 +45,7 @@ class AnalysisWorker(context: Context, params: WorkerParameters) : CoroutineWork
         val runner = AnalysisRunner(
             repo = container.songRepository,
             engineProvider = {
-                chooseModel(container.modelManager)?.let { (spec, file) ->
+                chooseModel(container.modelManager::awaitInitialState)?.let { (spec, file) ->
                     EngineChoice(container.createSpeechEngine(file), spec.fileName)
                 }
             },
@@ -101,20 +98,17 @@ class AnalysisWorker(context: Context, params: WorkerParameters) : CoroutineWork
             is AnalysisResult.Done -> workDataOf(KEY_MATCH_RATIO to result.matchRatio, KEY_LOW_QUALITY to result.lowQuality)
             is AnalysisResult.Error -> workDataOf(KEY_ERROR to result.reason.name)
         }
-
-        private const val MODEL_SETTLE_MS = 1_500L
-
-        /**
-         * BASE if Ready, else TINY if Ready, else null. [ModelManager] verifies files already on disk asynchronously
-         * after the first [ModelManager.state] call, so a state still `Missing` is given a moment to settle.
-         */
-        internal suspend fun chooseModel(manager: ModelManager): Pair<ModelSpec, java.io.File>? {
-            for (spec in listOf(ModelSpec.BASE, ModelSpec.TINY)) {
-                val flow = manager.state(spec)
-                val state = withTimeoutOrNull(MODEL_SETTLE_MS) { flow.first { it !is ModelState.Missing } } ?: flow.value
-                if (state is ModelState.Ready) return spec to state.file
-            }
-            return null
-        }
     }
+}
+
+/**
+ * Analysis model precedence: BASE if Ready, else TINY if Ready, else null. [stateOf] should report a settled
+ * state (e.g. [com.lyricsmachine.app.speech.ModelManager.awaitInitialState]).
+ */
+internal suspend fun chooseModel(stateOf: suspend (ModelSpec) -> ModelState): Pair<ModelSpec, java.io.File>? {
+    for (spec in listOf(ModelSpec.BASE, ModelSpec.TINY)) {
+        val state = stateOf(spec)
+        if (state is ModelState.Ready) return spec to state.file
+    }
+    return null
 }

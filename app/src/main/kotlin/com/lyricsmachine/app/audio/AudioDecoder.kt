@@ -7,6 +7,7 @@ import android.media.MediaExtractor
 import android.media.MediaFormat
 import android.net.Uri
 import com.lyricsmachine.core.audio.AudioMath
+import com.lyricsmachine.core.audio.StreamingResampler
 import java.io.IOException
 import java.nio.ByteOrder
 
@@ -61,6 +62,8 @@ class AudioDecoder(private val context: Context) {
                 var pendingSize = 0
                 var inputDone = false
                 var outputDone = false
+                var resampler: StreamingResampler? = null
+                var idleAfterEos = 0
 
                 while (!outputDone) {
                     if (!inputDone) {
@@ -78,6 +81,11 @@ class AudioDecoder(private val context: Context) {
                         }
                     }
                     val out = codec.dequeueOutputBuffer(info, TIMEOUT_US)
+                    if (out == MediaCodec.INFO_TRY_AGAIN_LATER && inputDone) {
+                        if (++idleAfterEos >= MAX_IDLE_AFTER_EOS) throw IOException("decoder stalled")
+                    } else {
+                        idleAfterEos = 0
+                    }
                     when {
                         out == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
                             val f = codec.outputFormat
@@ -97,7 +105,10 @@ class AudioDecoder(private val context: Context) {
                                 }
                                 if (rate <= 0 || channels <= 0) throw IOException("unknown output format")
                                 val mono = toMono(buf, float, channels)
-                                val resampled = AudioMath.resample(mono, rate)
+                                codec.releaseOutputBuffer(out, false) // data is copied; release before yielding
+                                // One resampler per output rate, so fractional position carries across buffers.
+                                val rs = resampler?.takeIf { it.fromRate == rate } ?: StreamingResampler(rate).also { resampler = it }
+                                val resampled = rs.process(mono)
                                 if (pendingSize + resampled.size > pending.size) {
                                     pending = pending.copyOf(maxOf(pending.size * 2, pendingSize + resampled.size))
                                 }
@@ -108,8 +119,9 @@ class AudioDecoder(private val context: Context) {
                                     System.arraycopy(pending, chunkSamples, pending, 0, pendingSize - chunkSamples)
                                     pendingSize -= chunkSamples
                                 }
+                            } else {
+                                codec.releaseOutputBuffer(out, false)
                             }
-                            codec.releaseOutputBuffer(out, false)
                             if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) outputDone = true
                         }
                     }
@@ -182,5 +194,9 @@ class AudioDecoder(private val context: Context) {
         override fun close() = res.release()
     }
 
-    private companion object { const val TIMEOUT_US = 10_000L }
+    private companion object {
+        const val TIMEOUT_US = 10_000L
+        /** Consecutive empty output polls after input EOS (5 s at [TIMEOUT_US]) before giving up. */
+        const val MAX_IDLE_AFTER_EOS = 500
+    }
 }

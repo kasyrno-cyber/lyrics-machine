@@ -1,6 +1,7 @@
 package com.lyricsmachine.app.speech
 
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
@@ -45,12 +46,21 @@ class ModelManager(
         val state = MutableStateFlow<ModelState>(ModelState.Missing)
         val lock = Mutex()
         var inFlight: Deferred<Unit>? = null
+        /** Completes once the on-disk check started by [entry] has finished. */
+        val initial = CompletableDeferred<Unit>()
     }
 
     private val scope = CoroutineScope(SupervisorJob() + io)
     private val entries = ConcurrentHashMap<ModelSpec, Entry>()
 
     fun state(spec: ModelSpec): StateFlow<ModelState> = entry(spec).state.asStateFlow()
+
+    /** Waits for the initial verification of any file already on disk, then returns the current state. */
+    suspend fun awaitInitialState(spec: ModelSpec): ModelState {
+        val e = entry(spec)
+        e.initial.await()
+        return e.state.value
+    }
 
     /** Makes [spec] available; the outcome is reported through [state]. Safe to call again after a failure. */
     suspend fun ensure(spec: ModelSpec) {
@@ -68,11 +78,15 @@ class ModelManager(
         val existing = entries.putIfAbsent(spec, created)
         if (existing != null) return existing
         scope.launch {
-            created.lock.withLock {
-                if (created.state.value == ModelState.Missing) {
-                    val target = File(dir, sourceOf(spec).fileName)
-                    if (verifyExisting(target, sourceOf(spec))) created.state.value = ModelState.Ready(target)
+            try {
+                created.lock.withLock {
+                    if (created.state.value == ModelState.Missing) {
+                        val target = File(dir, sourceOf(spec).fileName)
+                        if (verifyExisting(target, sourceOf(spec))) created.state.value = ModelState.Ready(target)
+                    }
                 }
+            } finally {
+                created.initial.complete(Unit)
             }
         }
         return created
