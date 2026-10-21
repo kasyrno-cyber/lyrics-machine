@@ -147,4 +147,14 @@ class ModelManagerTest {
             assertTrue(s.name, s.url.endsWith("/" + s.fileName))
         }
     }
+
+    @Test fun `awaitInitialState returns Ready for an existing valid file without polling`() = runBlocking {
+        File(dir, spec.fileName).writeBytes(body)
+        val state = manager().awaitInitialState(spec)
+        assertEquals(ModelState.Ready(File(dir, spec.fileName)), state)
+    }
+
+    @Test fun `awaitInitialState returns Missing when no file exists`() = runBlocking {
+        assertEquals(ModelState.Missing, manager().awaitInitialState(spec))
+    }
 }
