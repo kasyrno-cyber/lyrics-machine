@@ -14,6 +14,8 @@ import com.lyricsmachine.core.align.WordTiming
 import com.lyricsmachine.core.lyrics.LyricLine
 import com.lyricsmachine.core.lyrics.Lyrics
 import com.lyricsmachine.core.lyrics.LyricsParser
+import com.lyricsmachine.core.lyrics.Verse
+import com.lyricsmachine.core.lyrics.Verses
 import com.lyricsmachine.core.playback.PlaybackPosition
 import com.lyricsmachine.core.playback.TimingLookup
 import com.lyricsmachine.core.tracker.TrackerSnapshot
@@ -61,8 +63,9 @@ enum class MessageAction { ALLOW_MIC, USE_MIC }
 data class Notice(val id: Long, val text: String)
 
 /**
- * What the Sing screen shows. [currentWord]/[wordProgress] fill the current line word by word when
- * [wordTimed]; otherwise the whole current line is highlighted. [message] is a persistent notice (with an
+ * What the Sing screen shows: the verse at [currentVerse] (of [verses]) and a preview of the next one. It is
+ * derived from [currentLine] (verse 0 while that is null). [currentWord]/[wordProgress]/[wordTimed] come from
+ * the trackers and are no longer drawn. [message] is a persistent notice (with an
  * optional [messageAction]); [snackbar] is the head of a queue of one-off notices, acknowledged by id with
  * [SingViewModel.snackbarShown]. [canToggle] is false once playback has failed (no dead Play button).
  * [sentToSettings] is true while the user is in app settings after tapping the mic-denied notice. [requestMic] asks the screen to check/request RECORD_AUDIO and report back
@@ -70,6 +73,8 @@ data class Notice(val id: Long, val text: String)
  */
 data class SingUiState(
     val lines: List<LyricLine> = emptyList(),
+    val verses: List<Verse> = emptyList(),
+    val currentVerse: Int? = null,
     val currentLine: Int? = null,
     val currentWord: Int? = null,
     val wordProgress: Float = 0f,
@@ -138,6 +143,7 @@ class SingViewModel(
     private var lyrics = Lyrics(emptyList())
     private var language: Lang? = null
     private var lyricLines: List<Int> = emptyList()
+    private var verses: List<Verse> = emptyList()
 
     private var playback: PlaybackLike? = null
     private var playbackJob: Job? = null
@@ -157,14 +163,15 @@ class SingViewModel(
     private suspend fun load() {
         val song = safely { loadSong(songId) }
         if (song == null) {
-            _state.update { it.copy(loading = false, message = SingCopy.NOT_FOUND) }
+            upd { it.copy(loading = false, message = SingCopy.NOT_FOUND) }
             return
         }
         lyrics = LyricsParser.parse(song.lyricsText)
         language = song.language
         lyricLines = lyrics.lines.filter { !it.isSpacer }.map { it.index }
-        _state.update {
-            it.copy(title = song.title, lines = lyrics.lines, loading = false, currentLine = lyricLines.firstOrNull())
+        verses = Verses.of(lyrics)
+        upd {
+            it.copy(title = song.title, lines = lyrics.lines, verses = verses, loading = false, currentLine = lyricLines.firstOrNull())
         }
         if (manual) {
             enterManual(SingCopy.LYRICS_ONLY)
@@ -197,7 +204,7 @@ class SingViewModel(
         playback = pb
         playbackErrorShown = false
         val wordTimed = words.isNotEmpty()
-        _state.update { it.copy(mode = SingMode.PLAYBACK, wordTimed = wordTimed, isRunning = false, canToggle = true) }
+        upd { it.copy(mode = SingMode.PLAYBACK, wordTimed = wordTimed, isRunning = false, canToggle = true) }
         playbackJob = viewModelScope.launch {
             combine(pb.position, pb.isPlaying, pb.positionMs, pb.durationMs, pb.error) { p, playing, ms, dur, err ->
                 PlaybackFrame(p, playing, ms, dur, err)
@@ -210,8 +217,8 @@ class SingViewModel(
     )
 
     private fun applyPlayback(f: PlaybackFrame, wordTimed: Boolean) {
-        _state.update {
-            if (it.mode != SingMode.PLAYBACK) return@update it
+        upd {
+            if (it.mode != SingMode.PLAYBACK) return@upd it
             it.copy(
                 currentLine = f.position.lineIndex,
                 currentWord = f.position.wordIndex,
@@ -225,7 +232,7 @@ class SingViewModel(
         if (f.error != null && !playbackErrorShown) {
             // Never show the player's own text: it is technical and not translated.
             playbackErrorShown = true
-            _state.update {
+            upd {
                 it.copy(message = SingCopy.AUDIO_UNPLAYABLE, messageAction = MessageAction.USE_MIC, canToggle = false)
             }
         }
@@ -242,13 +249,13 @@ class SingViewModel(
             return
         }
         liveSpec = chosen.first
-        _state.update {
+        upd {
             it.copy(mode = SingMode.LIVE, isRunning = false, requestMic = true, message = notice, messageAction = null)
         }
     }
 
     private fun enterManual(message: String?, action: MessageAction? = null) {
-        _state.update {
+        upd {
             it.copy(
                 mode = SingMode.MANUAL,
                 isRunning = false,
@@ -266,7 +273,7 @@ class SingViewModel(
 
     /** The screen's answer to [SingUiState.requestMic] (or to a retry after [requestMicAgain]). */
     fun onMicPermissionResult(granted: Boolean) {
-        _state.update { it.copy(requestMic = false) }
+        upd { it.copy(requestMic = false) }
         if (!granted) {
             stopLive()
             enterManual(SingCopy.MIC_DENIED, MessageAction.ALLOW_MIC)
@@ -282,7 +289,7 @@ class SingViewModel(
     /** The user tapped the mic-denied notice: ask for the permission again. */
     fun requestMicAgain() {
         if (liveSpec == null) return
-        _state.update { it.copy(requestMic = true) }
+        upd { it.copy(requestMic = true) }
     }
 
     private fun startLive() {
@@ -308,7 +315,7 @@ class SingViewModel(
         }
         live = session
         handledEvents.clear()
-        _state.update {
+        upd {
             // Clears stale notices (mic denied, playback failed) but keeps telling the user why the audio is gone.
             val keep = it.message == SingCopy.AUDIO_GONE
             it.copy(
@@ -322,7 +329,7 @@ class SingViewModel(
         }
         if (resumeLine != null && resumeLine != lyricLines.firstOrNull()) {
             session.jumpTo(resumeLine)
-            _state.update { it.copy(currentLine = resumeLine, currentWord = null, wordProgress = 0f) }
+            upd { it.copy(currentLine = resumeLine, currentWord = null, wordProgress = 0f) }
         }
     }
 
@@ -341,7 +348,7 @@ class SingViewModel(
                 progress = if (pos >= tokens.size) 1f else (pos - floor(pos)).toFloat().coerceIn(0f, 1f)
             }
         }
-        _state.update {
+        upd {
             it.copy(
                 currentLine = snap.lineIndex,
                 currentWord = word,
@@ -376,7 +383,7 @@ class SingViewModel(
         liveJob?.cancel()
         liveJob = null
         try { session.stop() } catch (_: Exception) {}
-        _state.update { it.copy(isRunning = false, trackerState = null, wordTimed = false, currentWord = null) }
+        upd { it.copy(isRunning = false, trackerState = null, wordTimed = false, currentWord = null) }
     }
 
     private fun closePlayback() {
@@ -385,7 +392,7 @@ class SingViewModel(
         val pb = playback ?: return
         playback = null
         try { pb.close() } catch (_: Exception) {}
-        _state.update { it.copy(isRunning = false, positionMs = 0L, durationMs = null) }
+        upd { it.copy(isRunning = false, positionMs = 0L, durationMs = null) }
     }
 
     /** PLAYBACK: play/pause. LIVE: start (via the permission check, with a new session) or stop. MANUAL: no-op. */
@@ -396,24 +403,20 @@ class SingViewModel(
                 val pb = playback ?: return
                 if (pb.isPlaying.value) pb.pause() else pb.play()
             }
-            SingMode.LIVE -> if (live != null) stopLive() else _state.update { it.copy(requestMic = true) }
+            SingMode.LIVE -> if (live != null) stopLive() else upd { it.copy(requestMic = true) }
             SingMode.MANUAL -> Unit
         }
     }
 
-    /** Moves [delta] lyric lines, skipping spacers and clamping to the first and last lyric line. */
+    /**
+     * Moves [delta] verses to the first lyric line of the target verse, clamping at the first and last verse.
+     * With no current line the first verse counts as current.
+     */
     fun nudge(delta: Int) {
-        if (lyricLines.isEmpty() || delta == 0) return
-        var line = _state.value.currentLine
-        repeat(kotlin.math.abs(delta)) {
-            val c = line
-            line = when {
-                c == null -> lyricLines.first()
-                delta > 0 -> lyricLines.firstOrNull { it > c } ?: lyricLines.last()
-                else -> lyricLines.lastOrNull { it < c } ?: lyricLines.first()
-            }
-        }
-        line?.let { moveTo(it) }
+        if (verses.isEmpty() || delta == 0) return
+        val from = _state.value.currentVerse ?: 0
+        val target = (from + delta).coerceIn(0, verses.lastIndex)
+        moveTo(verses[target].lineIndices.first())
     }
 
     /** Moves to [index]; a spacer moves to the next lyric line (or the last one when none follows). */
@@ -428,7 +431,7 @@ class SingViewModel(
             SingMode.LIVE -> live?.jumpTo(line)
             SingMode.MANUAL -> Unit
         }
-        _state.update { it.copy(currentLine = line, currentWord = null, wordProgress = 0f) }
+        upd { it.copy(currentLine = line, currentWord = null, wordProgress = 0f) }
     }
 
     /** "Use microphone instead": stops playback and starts LIVE, or explains that no model is downloaded. */
@@ -439,12 +442,12 @@ class SingViewModel(
         viewModelScope.launch {
             val chosen = safely { chooseModel(modelState) }
             if (chosen == null) {
-                _state.update { it.copy(message = SingCopy.MODEL_MISSING, messageAction = null) }
+                upd { it.copy(message = SingCopy.MODEL_MISSING, messageAction = null) }
                 return@launch
             }
             liveSpec = chosen.first
             closePlayback()
-            _state.update {
+            upd {
                 it.copy(
                     mode = SingMode.LIVE, isRunning = false, requestMic = true, message = null, messageAction = null,
                     wordTimed = false, currentWord = null, canToggle = true,
@@ -456,23 +459,23 @@ class SingViewModel(
     /** Removes the notice with [id]; a repeated or stale acknowledgement changes nothing. */
     fun snackbarShown(id: Long) {
         snackbars.removeAll { it.id == id }
-        _state.update { it.copy(snackbar = snackbars.firstOrNull()) }
+        upd { it.copy(snackbar = snackbars.firstOrNull()) }
     }
 
     /** The mic-denied notice sent the user to app settings ("don't ask again" was chosen). */
     fun openedSettingsForMic() {
-        _state.update { it.copy(sentToSettings = true) }
+        upd { it.copy(sentToSettings = true) }
     }
 
     /** The screen is visible again; starts listening only if we sent the user to settings and they allowed the mic. */
     fun onReturnedFromSettings(granted: Boolean) {
         if (!_state.value.sentToSettings) return
-        _state.update { it.copy(sentToSettings = false) }
+        upd { it.copy(sentToSettings = false) }
         if (granted) onMicPermissionResult(true)
     }
 
     fun dismissMessage() {
-        _state.update { it.copy(message = null, messageAction = null) }
+        upd { it.copy(message = null, messageAction = null) }
     }
 
     /** ON_STOP: pause playback and stop listening; nothing resumes until the user taps again. */
@@ -488,7 +491,21 @@ class SingViewModel(
 
     private fun showSnackbar(text: String) {
         snackbars.addLast(Notice(nextNoticeId++, text))
-        _state.update { it.copy(snackbar = snackbars.first()) }
+        upd { it.copy(snackbar = snackbars.first()) }
+    }
+
+    /** Like MutableStateFlow.update, then re-derives [SingUiState.currentVerse] from the current line. */
+    private fun upd(transform: (SingUiState) -> SingUiState) {
+        _state.update { old ->
+            val n = transform(old)
+            val line = n.currentLine
+            val verse = when {
+                n.verses.isEmpty() -> null
+                line == null -> 0
+                else -> Verses.verseOfLine(n.verses, line) ?: n.verses.lastIndex
+            }
+            if (verse == n.currentVerse) n else n.copy(currentVerse = verse)
+        }
     }
 
     private suspend fun <T> safely(block: suspend () -> T): T? = try {

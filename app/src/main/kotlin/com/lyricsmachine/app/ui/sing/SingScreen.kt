@@ -273,12 +273,10 @@ fun SingScreen(container: AppContainer, songId: Long, manual: Boolean, onBack: (
                 Row(Modifier.fillMaxWidth().weight(1f), horizontalArrangement = Arrangement.Center,
                     verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator() }
             } else {
-                LyricsView(
+                VerseView(
                     lines = state.lines,
-                    currentLine = state.currentLine,
-                    currentWord = state.currentWord,
-                    wordProgress = state.wordProgress,
-                    wordTimed = state.wordTimed,
+                    verses = state.verses,
+                    currentVerse = state.currentVerse,
                     onTapLine = vm::tapLine,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
@@ -322,7 +320,7 @@ private fun Controls(state: SingUiState, vm: SingViewModel) {
                 horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { vm.nudge(-1) }, modifier = Modifier.size(56.dp).semantics { contentDescription = "Previous line" }) {
+                IconButton(onClick = { vm.nudge(-1) }, modifier = Modifier.size(56.dp).semantics { contentDescription = "Previous verse" }) {
                     Text("◀", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics {})
                 }
                 if (state.mode != SingMode.MANUAL && state.canToggle) {
@@ -332,7 +330,7 @@ private fun Controls(state: SingUiState, vm: SingViewModel) {
                     }
                     Button(onClick = vm::toggle, modifier = Modifier.widthIn(min = 120.dp)) { Text(label) }
                 }
-                IconButton(onClick = { vm.nudge(1) }, modifier = Modifier.size(56.dp).semantics { contentDescription = "Next line" }) {
+                IconButton(onClick = { vm.nudge(1) }, modifier = Modifier.size(56.dp).semantics { contentDescription = "Next verse" }) {
                     Text("▶", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics {})
                 }
             }
