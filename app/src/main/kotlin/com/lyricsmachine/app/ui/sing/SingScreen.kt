@@ -175,10 +175,13 @@ fun SingScreen(container: AppContainer, songId: Long, manual: Boolean, onBack: (
     fun allowMic() {
         when {
             hasMic() -> vm.onMicPermissionResult(true)
-            deniedForGood -> context.startActivity(
-                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
-                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
+            deniedForGood -> {
+                vm.openedSettingsForMic()
+                context.startActivity(
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                )
+            }
             else -> vm.requestMicAgain()
         }
     }
@@ -191,8 +194,7 @@ fun SingScreen(container: AppContainer, songId: Long, manual: Boolean, onBack: (
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_STOP -> if (activity?.isChangingConfigurations != true) vm.onBackgrounded()
-                Lifecycle.Event.ON_START ->
-                    if (latest.messageAction == MessageAction.ALLOW_MIC && hasMic()) vm.onMicPermissionResult(true)
+                Lifecycle.Event.ON_START -> if (latest.sentToSettings) vm.onReturnedFromSettings(hasMic())
                 else -> Unit
             }
         }
@@ -323,7 +325,7 @@ private fun Controls(state: SingUiState, vm: SingViewModel) {
                 IconButton(onClick = { vm.nudge(-1) }, modifier = Modifier.size(56.dp).semantics { contentDescription = "Previous line" }) {
                     Text("◀", fontSize = 24.sp, modifier = Modifier.clearAndSetSemantics {})
                 }
-                if (state.mode != SingMode.MANUAL) {
+                if (state.mode != SingMode.MANUAL && state.canToggle) {
                     val label = when (state.mode) {
                         SingMode.PLAYBACK -> if (state.isRunning) "Pause" else "Play"
                         else -> if (state.isRunning) "Stop" else "Listen"

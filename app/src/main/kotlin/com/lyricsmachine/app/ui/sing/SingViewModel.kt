@@ -62,8 +62,9 @@ data class Notice(val id: Long, val text: String)
 /**
  * What the Sing screen shows. [currentWord]/[wordProgress] fill the current line word by word when
  * [wordTimed]; otherwise the whole current line is highlighted. [message] is a persistent notice (with an
- * optional [messageAction]); [snackbar] is the head of a queue of one-off notices, acknowledged with
- * [SingViewModel.snackbarShown]. [requestMic] asks the screen to check/request RECORD_AUDIO and report back
+ * optional [messageAction]); [snackbar] is the head of a queue of one-off notices, acknowledged by id with
+ * [SingViewModel.snackbarShown]. [canToggle] is false once playback has failed (no dead Play button).
+ * [sentToSettings] is true while the user is in app settings after tapping the mic-denied notice. [requestMic] asks the screen to check/request RECORD_AUDIO and report back
  * through [SingViewModel.onMicPermissionResult].
  */
 data class SingUiState(
@@ -115,7 +116,8 @@ interface LiveLike {
  * - LIVE (LYRICS_ONLY / AUDIO_NOT_ANALYSED): a [LiveLike] session follows the microphone.
  * - MANUAL (`manual` nav arg, no model, mic denied, no timings, engine failure): taps and nudges only.
  *
- * Nothing starts on its own: the user taps Play/Listen. Live sessions cannot be restarted, so every Listen
+ * In LIVE, listening starts as soon as the mic permission is granted on entry; in PLAYBACK nothing plays
+ * until the user taps Play. Nothing resumes after backgrounding. Live sessions cannot be restarted, so every Listen
  * creates a new one. Each [LiveEvent] kind is shown at most once per session even if replayed.
  */
 class SingViewModel(
@@ -145,6 +147,7 @@ class SingViewModel(
     private var liveSpec: ModelSpec? = null
     private val handledEvents = mutableSetOf<LiveEvent>()
     private val snackbars = ArrayDeque<Notice>()
+    private var nextNoticeId = 0L
 
     init {
         viewModelScope.launch { load() }
@@ -187,7 +190,7 @@ class SingViewModel(
         playback = pb
         playbackErrorShown = false
         val wordTimed = words.isNotEmpty()
-        _state.update { it.copy(mode = SingMode.PLAYBACK, wordTimed = wordTimed, isRunning = false) }
+        _state.update { it.copy(mode = SingMode.PLAYBACK, wordTimed = wordTimed, isRunning = false, canToggle = true) }
         playbackJob = viewModelScope.launch {
             combine(pb.position, pb.isPlaying, pb.positionMs, pb.durationMs, pb.error) { p, playing, ms, dur, err ->
                 PlaybackFrame(p, playing, ms, dur, err)
@@ -215,7 +218,9 @@ class SingViewModel(
         if (f.error != null && !playbackErrorShown) {
             // Never show the player's own text: it is technical and not translated.
             playbackErrorShown = true
-            _state.update { it.copy(message = SingCopy.AUDIO_UNPLAYABLE, messageAction = MessageAction.USE_MIC) }
+            _state.update {
+                it.copy(message = SingCopy.AUDIO_UNPLAYABLE, messageAction = MessageAction.USE_MIC, canToggle = false)
+            }
         }
     }
 
@@ -294,7 +299,10 @@ class SingViewModel(
         live = session
         handledEvents.clear()
         _state.update {
-            it.copy(mode = SingMode.LIVE, isRunning = true, message = null, messageAction = null, requestMic = false)
+            it.copy(
+                mode = SingMode.LIVE, isRunning = true, message = null, messageAction = null, requestMic = false,
+                canToggle = true,
+            )
         }
         liveJob = viewModelScope.launch {
             launch { session.snapshot.collect { applySnapshot(session, it) } }
@@ -368,6 +376,7 @@ class SingViewModel(
 
     /** PLAYBACK: play/pause. LIVE: start (via the permission check, with a new session) or stop. MANUAL: no-op. */
     fun toggle() {
+        if (!_state.value.canToggle) return
         when (_state.value.mode) {
             SingMode.PLAYBACK -> {
                 val pb = playback ?: return
@@ -401,7 +410,7 @@ class SingViewModel(
 
     private fun moveTo(line: Int) {
         when (_state.value.mode) {
-            SingMode.PLAYBACK -> playback?.seekToLine(line)
+            SingMode.PLAYBACK -> if (_state.value.canToggle) playback?.seekToLine(line) // errored: like MANUAL
             SingMode.LIVE -> live?.jumpTo(line)
             SingMode.MANUAL -> Unit
         }
@@ -424,20 +433,29 @@ class SingViewModel(
             _state.update {
                 it.copy(
                     mode = SingMode.LIVE, isRunning = false, requestMic = true, message = null, messageAction = null,
-                    wordTimed = false, currentWord = null,
+                    wordTimed = false, currentWord = null, canToggle = true,
                 )
             }
         }
     }
 
+    /** Removes the notice with [id]; a repeated or stale acknowledgement changes nothing. */
     fun snackbarShown(id: Long) {
-        snackbars.removeFirstOrNull()
+        snackbars.removeAll { it.id == id }
         _state.update { it.copy(snackbar = snackbars.firstOrNull()) }
     }
 
-    fun openedSettingsForMic() {}
+    /** The mic-denied notice sent the user to app settings ("don't ask again" was chosen). */
+    fun openedSettingsForMic() {
+        _state.update { it.copy(sentToSettings = true) }
+    }
 
-    fun onReturnedFromSettings(granted: Boolean) {}
+    /** The screen is visible again; starts listening only if we sent the user to settings and they allowed the mic. */
+    fun onReturnedFromSettings(granted: Boolean) {
+        if (!_state.value.sentToSettings) return
+        _state.update { it.copy(sentToSettings = false) }
+        if (granted) onMicPermissionResult(true)
+    }
 
     fun dismissMessage() {
         _state.update { it.copy(message = null, messageAction = null) }
@@ -455,7 +473,7 @@ class SingViewModel(
     }
 
     private fun showSnackbar(text: String) {
-        snackbars.addLast(Notice(0, text))
+        snackbars.addLast(Notice(nextNoticeId++, text))
         _state.update { it.copy(snackbar = snackbars.first()) }
     }
 
