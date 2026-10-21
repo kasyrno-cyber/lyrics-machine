@@ -11,9 +11,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
@@ -165,7 +167,8 @@ fun EditSongScreen(
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+        // The Scaffold padding already covers the navigation bar; consume it so imePadding adds only the rest.
+        Box(Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             if (state.loadFailed) {
                 Column(
                     Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(24.dp),
@@ -177,7 +180,8 @@ fun EditSongScreen(
             } else if (state.loading) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
             } else Column(
-                Modifier.widthIn(max = 720.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
+                Modifier.widthIn(max = 720.dp).fillMaxWidth().imePadding().verticalScroll(rememberScrollState())
+                    .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 OutlinedTextField(

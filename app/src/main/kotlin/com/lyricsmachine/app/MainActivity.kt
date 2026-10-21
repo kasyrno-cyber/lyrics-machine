@@ -3,6 +3,7 @@ package com.lyricsmachine.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -29,6 +30,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // targetSdk 35 draws edge to edge anyway; this also gives the system bars matching contrast.
+        enableEdgeToEdge()
         setContent {
             LyricsMachineTheme {
                 AppNav(container)
