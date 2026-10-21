@@ -2,6 +2,7 @@ package com.lyricsmachine.app.playback
 
 import android.content.Context
 import android.net.Uri
+import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -33,7 +34,13 @@ import java.io.Closeable
  */
 class PlaybackSync(context: Context, audioUri: Uri, private val lookup: TimingLookup) : Closeable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
-    private val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext).build()
+    private val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext)
+        .setAudioAttributes(
+            AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
+            /* handleAudioFocus = */ true,
+        )
+        .setHandleAudioBecomingNoisy(true) // pause when headphones are unplugged
+        .build()
     private var pollJob: Job? = null
     private var closed = false
 
