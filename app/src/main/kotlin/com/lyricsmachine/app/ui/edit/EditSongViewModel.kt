@@ -21,7 +21,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.coroutines.cancellation.CancellationException
 
-enum class SaveOutcome { SAVED_LYRICS_ONLY, SAVED_NEEDS_ANALYSIS, INVALID_EMPTY_LYRICS, INVALID_EMPTY_TITLE }
+/** [FAILED]: the song could not be stored; the error is shown and the screen stays open. */
+enum class SaveOutcome { SAVED_LYRICS_ONLY, SAVED_NEEDS_ANALYSIS, INVALID_EMPTY_LYRICS, INVALID_EMPTY_TITLE, FAILED }
+
+object EditCopy {
+    const val SAVE_FAILED = "Couldn't save this song."
+}
 
 data class EditUiState(
     val title: String = "",
@@ -195,6 +200,20 @@ class EditSongViewModel(
             return invalid
         }
         _state.update { it.copy(saving = true) }
+        return try {
+            store(s)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // e.g. a full disk: nothing was stored, so stay on the form and keep the session's grants.
+            _state.update { it.copy(error = EditCopy.SAVE_FAILED, saveResult = SaveOutcome.FAILED) }
+            SaveOutcome.FAILED
+        } finally {
+            _state.update { it.copy(saving = false) }
+        }
+    }
+
+    private suspend fun store(s: EditUiState): SaveOutcome {
         val old = existing
         val entity = SongEntity(
             id = old?.id ?: 0L,
@@ -230,7 +249,7 @@ class EditSongViewModel(
         }
         existing = entity.copy(id = id)
         original = s.copy(error = null, dirty = false)
-        _state.update { it.copy(dirty = false, saving = false, saveResult = outcome, savedId = id) }
+        _state.update { it.copy(dirty = false, saveResult = outcome, savedId = id) }
         return outcome
     }
 

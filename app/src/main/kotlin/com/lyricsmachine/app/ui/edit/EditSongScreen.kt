@@ -139,6 +139,7 @@ fun EditSongScreen(
             SaveOutcome.INVALID_EMPTY_LYRICS -> lyricsError = true
             SaveOutcome.SAVED_LYRICS_ONLY -> onSavedLyricsOnly()
             SaveOutcome.SAVED_NEEDS_ANALYSIS -> onNeedsAnalysis(state.savedId)
+            SaveOutcome.FAILED -> Unit // the error snackbar explains; stay on the form
         }
         if (result != null) vm.onSaveResultHandled()
     }
