@@ -177,6 +177,11 @@ class SongRepositoryTest {
         repo.delete(id)
         awaitLast(null)
         job.cancel()
-        assertEquals(listOf(null, SongMode.AUDIO_NOT_ANALYSED, SongMode.AUDIO_READY, null), seen.toList())
+        val got = seen.toList()
+        // The songs and timings tables invalidate separately, so delete may transiently show AUDIO_NOT_ANALYSED
+        // (timings gone, song row not yet) before the song disappears.
+        assertEquals(listOf(null, SongMode.AUDIO_NOT_ANALYSED, SongMode.AUDIO_READY), got.take(3))
+        assertNull(got.last())
+        assertTrue(got.drop(3).dropLast(1).all { it == SongMode.AUDIO_NOT_ANALYSED })
     }
 }
