@@ -368,7 +368,7 @@ class LiveSessionTest {
         val h = Harness(this, tinyDelay = 2_500, initialModel = ModelSpec.TINY, collectEvents = false)
         h.session.start()
         h.loud()
-        h.advanceTo(20_000) // StillTooSlow emitted at 10500 with no collector
+        h.advanceTo(20_000) // StillTooSlow emitted at 12500 with no collector
         assertEquals(LiveEvent.StillTooSlow, withTimeout(1_000) { h.session.events.first() })
         h.session.stop()
     }

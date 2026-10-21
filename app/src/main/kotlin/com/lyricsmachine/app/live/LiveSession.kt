@@ -1,5 +1,6 @@
 package com.lyricsmachine.app.live
 
+import android.util.Log
 import com.lyricsmachine.app.speech.ModelSpec
 import com.lyricsmachine.core.Lang
 import com.lyricsmachine.core.audio.AudioMath
@@ -16,6 +17,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
@@ -41,6 +43,8 @@ interface MicSource {
 sealed interface LiveEvent {
     data object SwitchedToTinyModel : LiveEvent
     data object StillTooSlow : LiveEvent
+    /** The engine keeps failing and no fallback is left; live mode cannot hear anything. */
+    data object EngineFailed : LiveEvent
 }
 
 /**
@@ -60,6 +64,12 @@ sealed interface LiveEvent {
  * transcription is done) and emits [LiveEvent.SwitchedToTinyModel]; on TINY it emits
  * [LiveEvent.StillTooSlow] once. Engines that are [Closeable] are closed by the session.
  *
+ * Engine failures (exceptions, including a CancellationException while the session is still active) are
+ * logged through [log] and counted; a success resets the count. After 3 in a row on
+ * BASE the session switches to TINY as above; after that many on TINY, or when the switch itself fails, it
+ * emits [LiveEvent.EngineFailed] once. [events] replays up to 3 events (each kind is emitted at most once),
+ * so a late collector still sees them.
+ *
  * Lifecycle: [start] once, then [stop] (idempotent; stops the mic, the ticker and the chunk loop, and closes
  * the engine after any in-flight transcription completes). A stopped session cannot be restarted: [start]
  * after [stop] throws [IllegalStateException]; create a new session instead.
@@ -76,6 +86,7 @@ class LiveSession(
     private val trackerDispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1),
     private val initialModel: ModelSpec = ModelSpec.BASE,
     private val tickerIntervalMs: Long = 100,
+    private val log: (String, Throwable) -> Unit = { msg, t -> Log.w(TAG, msg, t) },
 ) {
     private val language: Lang? = if (language == Lang.MIXED) null else language
     private val sessionScope = CoroutineScope(scope.coroutineContext + SupervisorJob(scope.coroutineContext[Job]))
@@ -88,6 +99,8 @@ class LiveSession(
     private var jumpGeneration = 0
     private var stillTooSlowSent = false
     private var switchFailed = false
+    private var consecutiveFailures = 0
+    private var engineFailedSent = false
 
     // Engine lifecycle; guarded by lock because stop() may run on another thread.
     private val lock = Any()
@@ -102,7 +115,7 @@ class LiveSession(
     private val _snapshot = MutableStateFlow(tracker.snapshot(clock()))
     val snapshot: StateFlow<TrackerSnapshot> = _snapshot.asStateFlow()
 
-    private val _events = MutableSharedFlow<LiveEvent>(extraBufferCapacity = 8)
+    private val _events = MutableSharedFlow<LiveEvent>(replay = 3)
     val events: SharedFlow<LiveEvent> = _events.asSharedFlow()
 
     /** Starts the mic, the chunk loop and the snapshot ticker. Throws [IllegalStateException] after [stop]. */
@@ -179,45 +192,72 @@ class LiveSession(
             val usedSpec = spec
             busy = true
             inFlight = sessionScope.launch {
-                val startMs = clock()
-                val heard: List<HeardWord> = try {
-                    current.transcribe(window, language)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (_: Exception) {
-                    emptyList() // a failed transcription counts as hearing nothing
-                }
-                val inferenceMs = clock() - startMs
-                withContext(trackerDispatcher) {
-                    busy = false
-                    if (generation == jumpGeneration) {
-                        tracker.onChunk(windowEndMs, heard, audioPresent = true)
-                        _snapshot.value = tracker.snapshot(clock())
+                try {
+                    val startMs = clock()
+                    var failure: Throwable? = null
+                    val heard: List<HeardWord> = try {
+                        current.transcribe(window, language)
+                    } catch (e: CancellationException) {
+                        if (!sessionScope.isActive) throw e // the session is stopping
+                        failure = e // a stray cancellation from inside the engine counts as a failure
+                        emptyList()
+                    } catch (e: Exception) {
+                        failure = e
+                        emptyList()
                     }
-                    guard.record(inferenceMs)
-                    if (guard.overBudget) onOverBudget(usedSpec)
+                    val inferenceMs = clock() - startMs
+                    withContext(trackerDispatcher) {
+                        busy = false
+                        if (generation == jumpGeneration) {
+                            tracker.onChunk(windowEndMs, heard, audioPresent = true)
+                            _snapshot.value = tracker.snapshot(clock())
+                        }
+                        if (failure != null) {
+                            log("transcription failed on $usedSpec", failure)
+                            onEngineFailure(usedSpec)
+                        } else {
+                            consecutiveFailures = 0
+                            guard.record(inferenceMs)
+                            if (guard.overBudget) onOverBudget(usedSpec)
+                        }
+                    }
+                } finally {
+                    withContext(NonCancellable + trackerDispatcher) { busy = false }
                 }
             }
         }
     }
 
-    /** Runs on [trackerDispatcher], inside the transcription job that just finished, so the old engine is idle. */
-    private fun onOverBudget(usedSpec: ModelSpec) {
-        if (usedSpec == ModelSpec.TINY || switchFailed) {
-            reportStillTooSlow()
-            return
+    /** Runs on [trackerDispatcher] after a failed transcription. */
+    private fun onEngineFailure(usedSpec: ModelSpec) {
+        consecutiveFailures++
+        if (consecutiveFailures < MAX_CONSECUTIVE_FAILURES) return
+        if (usedSpec == ModelSpec.TINY || switchFailed || !switchToTiny()) {
+            switchFailed = true
+            reportOnce(LiveEvent.EngineFailed)
         }
+    }
+
+    /** Runs on [trackerDispatcher] after a transcription over budget. */
+    private fun onOverBudget(usedSpec: ModelSpec) {
+        if (usedSpec == ModelSpec.TINY || switchFailed || !switchToTiny()) {
+            switchFailed = switchFailed || usedSpec != ModelSpec.TINY // no tiny model: stay on base
+            reportOnce(LiveEvent.StillTooSlow)
+        }
+    }
+
+    /**
+     * Runs on [trackerDispatcher], inside the transcription job that just finished, so the old engine is idle.
+     * Returns false when the tiny engine cannot be created (the session stays on base).
+     */
+    private fun switchToTiny(): Boolean {
         val tinyEngine = try {
             engineFor(ModelSpec.TINY)
         } catch (e: CancellationException) {
             throw e
-        } catch (_: Exception) {
-            null
-        }
-        if (tinyEngine == null) {
-            switchFailed = true // no tiny model: stay on base and say the device is too slow
-            reportStillTooSlow()
-            return
+        } catch (e: Exception) {
+            log("cannot create the tiny engine", e)
+            return false
         }
         val old: SpeechEngine?
         synchronized(lock) {
@@ -231,17 +271,22 @@ class LiveSession(
         }
         if (old == null) {
             closeEngine(tinyEngine) // stopped meanwhile; stop() closes the base engine
-            return
+            return true
         }
         closeEngine(old)
         guard = PerformanceGuard(budgetMs = config.chunkIntervalMs)
+        consecutiveFailures = 0
         _events.tryEmit(LiveEvent.SwitchedToTinyModel)
+        return true
     }
 
-    private fun reportStillTooSlow() {
-        if (stillTooSlowSent) return
-        stillTooSlowSent = true
-        _events.tryEmit(LiveEvent.StillTooSlow)
+    private fun reportOnce(event: LiveEvent) {
+        when (event) {
+            LiveEvent.StillTooSlow -> if (stillTooSlowSent) return else stillTooSlowSent = true
+            LiveEvent.EngineFailed -> if (engineFailedSent) return else engineFailedSent = true
+            LiveEvent.SwitchedToTinyModel -> Unit
+        }
+        _events.tryEmit(event)
     }
 
     private fun closeEngine(e: SpeechEngine?) {
@@ -249,5 +294,10 @@ class LiveSession(
             (e as? Closeable)?.close()
         } catch (_: Exception) {
         }
+    }
+
+    private companion object {
+        const val TAG = "LiveSession"
+        const val MAX_CONSECUTIVE_FAILURES = 3
     }
 }
