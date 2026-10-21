@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Original artwork: a simple microphone beside three lyric lines. Kept inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Microphone head: a capsule. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M37,36 a7,7 0 0,1 14,0 v14 a7,7 0 0,1 -14,0 z" />
+    <!-- Cradle around the head. -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M32,48 a12,12 0 0,0 24,0" />
+    <!-- Stand and base. -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M44,60 v8 M38,70 h12" />
+    <!-- Three lyric lines of different lengths. -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M61,42 h16 M61,52 h12 M61,62 h14" />
+</vector>
