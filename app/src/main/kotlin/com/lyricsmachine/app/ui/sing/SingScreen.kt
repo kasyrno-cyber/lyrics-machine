@@ -208,10 +208,11 @@ fun SingScreen(container: AppContainer, songId: Long, manual: Boolean, onBack: (
     }
 
     val snackbarHost = remember { SnackbarHostState() }
-    LaunchedEffect(state.snackbar) {
-        val text = state.snackbar ?: return@LaunchedEffect
-        snackbarHost.showSnackbar(text)
-        vm.snackbarShown()
+    val notice = state.snackbar
+    LaunchedEffect(notice?.id) {
+        val n = notice ?: return@LaunchedEffect
+        snackbarHost.showSnackbar(n.text)
+        vm.snackbarShown(n.id)
     }
 
     var menuOpen by remember { mutableStateOf(false) }

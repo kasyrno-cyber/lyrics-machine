@@ -56,6 +56,9 @@ enum class SingMode { PLAYBACK, LIVE, MANUAL }
 
 enum class MessageAction { ALLOW_MIC, USE_MIC }
 
+/** One queued snackbar; [id] is unique per view model, so the same [text] twice is still two notices. */
+data class Notice(val id: Long, val text: String)
+
 /**
  * What the Sing screen shows. [currentWord]/[wordProgress] fill the current line word by word when
  * [wordTimed]; otherwise the whole current line is highlighted. [message] is a persistent notice (with an
@@ -76,10 +79,12 @@ data class SingUiState(
     val loading: Boolean = true,
     val wordTimed: Boolean = false,
     val messageAction: MessageAction? = null,
-    val snackbar: String? = null,
+    val snackbar: Notice? = null,
     val requestMic: Boolean = false,
     val positionMs: Long = 0L,
     val durationMs: Long? = null,
+    val sentToSettings: Boolean = false,
+    val canToggle: Boolean = true,
 )
 
 /** What the view model needs from [com.lyricsmachine.app.playback.PlaybackSync]; faked in tests. */
@@ -139,7 +144,7 @@ class SingViewModel(
     private var liveJob: Job? = null
     private var liveSpec: ModelSpec? = null
     private val handledEvents = mutableSetOf<LiveEvent>()
-    private val snackbars = ArrayDeque<String>()
+    private val snackbars = ArrayDeque<Notice>()
 
     init {
         viewModelScope.launch { load() }
@@ -425,10 +430,14 @@ class SingViewModel(
         }
     }
 
-    fun snackbarShown() {
+    fun snackbarShown(id: Long) {
         snackbars.removeFirstOrNull()
         _state.update { it.copy(snackbar = snackbars.firstOrNull()) }
     }
+
+    fun openedSettingsForMic() {}
+
+    fun onReturnedFromSettings(granted: Boolean) {}
 
     fun dismissMessage() {
         _state.update { it.copy(message = null, messageAction = null) }
@@ -446,7 +455,7 @@ class SingViewModel(
     }
 
     private fun showSnackbar(text: String) {
-        snackbars.addLast(text)
+        snackbars.addLast(Notice(0, text))
         _state.update { it.copy(snackbar = snackbars.first()) }
     }
 

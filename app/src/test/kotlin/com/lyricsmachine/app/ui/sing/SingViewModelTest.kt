@@ -300,7 +300,7 @@ class SingViewModelTest {
         val live = lives.single()
         live.events.tryEmit(LiveEvent.EngineFailed)
         assertEquals(SingMode.MANUAL, vm.state.value.mode)
-        assertEquals(SingCopy.ENGINE_FAILED, vm.state.value.snackbar)
+        assertEquals(SingCopy.ENGINE_FAILED, vm.state.value.snackbar?.text)
         assertEquals(1, live.stopped)
         assertFalse(vm.state.value.isRunning)
         assertNull(vm.state.value.trackerState)
@@ -315,13 +315,87 @@ class SingViewModelTest {
         live.events.tryEmit(LiveEvent.SwitchedToTinyModel)
         live.events.tryEmit(LiveEvent.SwitchedToTinyModel) // a replay seen again
         live.events.tryEmit(LiveEvent.StillTooSlow)
-        assertEquals("Switched to a faster model for this device.", vm.state.value.snackbar)
-        vm.snackbarShown()
-        assertEquals("This device is struggling — the lyrics may lag.", vm.state.value.snackbar)
-        vm.snackbarShown()
+        assertEquals("Switched to a faster model for this device.", vm.state.value.snackbar?.text)
+        vm.snackbarShown(vm.state.value.snackbar!!.id)
+        assertEquals("This device is struggling — the lyrics may lag.", vm.state.value.snackbar?.text)
+        vm.snackbarShown(vm.state.value.snackbar!!.id)
         assertNull(vm.state.value.snackbar)
         live.events.tryEmit(LiveEvent.StillTooSlow)
         assertNull(vm.state.value.snackbar)
+    }
+
+    @Test fun `the same snackbar text queued twice does not jam the queue`() {
+        val vm = liveVm()
+        // Two sessions each report StillTooSlow (same text twice in a row), then the engine fails.
+        lives[0].events.tryEmit(LiveEvent.StillTooSlow)
+        vm.toggle(); vm.toggle(); vm.onMicPermissionResult(true)
+        lives[1].events.tryEmit(LiveEvent.StillTooSlow)
+        lives[1].events.tryEmit(LiveEvent.EngineFailed)
+        val shown = mutableListOf<String>()
+        val ids = mutableSetOf<Long>()
+        repeat(5) {
+            val n = vm.state.value.snackbar ?: return@repeat
+            assertTrue("each notice has its own id", ids.add(n.id))
+            shown += n.text
+            vm.snackbarShown(n.id)
+        }
+        assertEquals(listOf(SingCopy.STILL_TOO_SLOW, SingCopy.STILL_TOO_SLOW, SingCopy.ENGINE_FAILED), shown)
+        assertNull(vm.state.value.snackbar)
+    }
+
+    @Test fun `acknowledging a stale snackbar id does not drop the current one`() {
+        val vm = liveVm()
+        lives[0].events.tryEmit(LiveEvent.StillTooSlow)
+        val first = vm.state.value.snackbar!!
+        vm.snackbarShown(first.id)
+        vm.snackbarShown(first.id) // a repeated acknowledgement after a recomposition
+        lives[0].events.tryEmit(LiveEvent.SwitchedToTinyModel)
+        assertEquals(SingCopy.SWITCHED_TO_TINY, vm.state.value.snackbar?.text)
+        vm.snackbarShown(first.id)
+        assertEquals(SingCopy.SWITCHED_TO_TINY, vm.state.value.snackbar?.text)
+    }
+
+    @Test fun `return from settings starts listening only when we sent the user there`() {
+        mode = SongMode.LYRICS_ONLY
+        val vm = vm()
+        vm.onMicPermissionResult(false)
+        // Returning to the screen without having opened settings never starts anything.
+        vm.onReturnedFromSettings(granted = true)
+        assertTrue(lives.isEmpty())
+        assertEquals(SingMode.MANUAL, vm.state.value.mode)
+
+        vm.openedSettingsForMic()
+        assertTrue(vm.state.value.sentToSettings)
+        vm.onReturnedFromSettings(granted = false)
+        assertTrue(lives.isEmpty())
+        assertFalse(vm.state.value.sentToSettings)
+
+        vm.openedSettingsForMic()
+        vm.onReturnedFromSettings(granted = true)
+        assertEquals(SingMode.LIVE, vm.state.value.mode)
+        assertEquals(1, lives.single().started)
+        assertFalse(vm.state.value.sentToSettings)
+
+        // Later returns (e.g. after backgrounding) do not auto-resume.
+        vm.onBackgrounded()
+        vm.onReturnedFromSettings(granted = true)
+        assertEquals(1, lives.size)
+    }
+
+    @Test fun `playback error hides the toggle and makes it a no-op`() {
+        val vm = vm()
+        assertTrue(vm.state.value.canToggle)
+        playbacks.single().error.value = "Source error"
+        assertFalse(vm.state.value.canToggle)
+        vm.toggle()
+        assertEquals(0, playbacks.single().plays)
+        assertFalse(vm.state.value.isRunning)
+        vm.nudge(1) // acts like manual: moves the line, no seek on the broken player
+        assertEquals(1, vm.state.value.currentLine)
+        assertTrue(playbacks.single().seeks.isEmpty())
+        vm.useMicrophone()
+        assertEquals(SingMode.LIVE, vm.state.value.mode)
+        assertTrue(vm.state.value.canToggle)
     }
 
     @Test fun `playback error shows our copy not the raw player text`() {
