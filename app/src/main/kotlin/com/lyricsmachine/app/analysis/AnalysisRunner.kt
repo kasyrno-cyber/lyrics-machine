@@ -91,7 +91,7 @@ class AnalysisRunner(
         object : Iterator<FloatArray> {
             override fun hasNext() = guard { it.hasNext() }
             override fun next() = guard { it.next() }
-            private inline fun <T> guard(block: () -> T): T = try {
+            private fun <T> guard(block: () -> T): T = try {
                 block()
             } catch (e: CancellationException) {
                 throw e
