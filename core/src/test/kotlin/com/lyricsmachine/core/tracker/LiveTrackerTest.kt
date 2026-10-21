@@ -145,6 +145,51 @@ class LiveTrackerTest {
         assertEquals(3, s.lineIndex)
     }
 
+    @Test fun `scattered matches do not lock a whole-song search`() {
+        val l = LyricsParser.parse(
+            """
+            i walk the road alone tonight
+            and you are there beside me
+            we hold the light for you and i
+            the river knows the way home
+            """.trimIndent()
+        )
+        val t = LiveTracker(l)
+        val s = t.onChunk(2_000, say("i the you"), audioPresent = true)
+        assertEquals(TrackerState.Listening, s.state)
+        assertEquals(0.0, s.tokenPosition, 1e-9)
+        assertEquals(TrackerState.Locked, t.onChunk(4_000, say("the river knows"), audioPresent = true).state)
+    }
+
+    @Test fun `short tail re-heard just before the anchor stays in the current repeat`() {
+        val t = tracker()
+        assertEquals(23.0, t.onChunk(0, say("carry me home over the hills $chorus"), audioPresent = true).tokenPosition, 1e-9)
+        // 1 s later the extrapolated position is still on line 4, so line 3 is inside the window.
+        val s = t.onChunk(1_000, say("we sing"), audioPresent = true)
+        assertTrue(s.tokenPosition <= 23.0, "$s") // not chorus 3 (32)
+        assertEquals(22.0, s.tokenPosition, 1e-9) // after "we sing" of chorus 2
+        assertEquals(3, s.lineIndex)
+
+        val t2 = tracker()
+        assertEquals(22.0, t2.onChunk(0, say("carry me home over the hills light the night we sing"), audioPresent = true).tokenPosition, 1e-9)
+        val s2 = t2.onChunk(1_000, say("night we"), audioPresent = true)
+        assertEquals(21.0, s2.tokenPosition, 1e-9) // chorus 2, not chorus 3 (31)
+        assertEquals(3, s2.lineIndex)
+    }
+
+    @Test fun `weak windowed match more than one lyric line ahead does not lock`() {
+        val t = tracker()
+        t.onChunk(0, say(opening), audioPresent = true) // anchor 5, line 1
+        val far = t.onChunk(2_000, say("stones remember"), audioPresent = true) // line 4: 3 lines ahead
+        assertEquals(TrackerState.Coasting, far.state)
+        val near = t.onChunk(3_000, say("carry me"), audioPresent = true) // line 2: one line past line 1
+        assertEquals(TrackerState.Locked, near.state)
+        assertEquals(13.0, near.tokenPosition, 1e-9)
+        val strong = t.onChunk(4_000, say("stones remember every"), audioPresent = true) // run of 3 is enough
+        assertEquals(TrackerState.Locked, strong.state)
+        assertEquals(26.0, strong.tokenPosition, 1e-9)
+    }
+
     @Test fun `user jump overrides position`() {
         val t = tracker()
         t.onChunk(0, say(opening), audioPresent = true)

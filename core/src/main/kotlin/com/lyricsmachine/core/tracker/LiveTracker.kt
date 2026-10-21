@@ -13,6 +13,11 @@ import kotlin.math.floor
  */
 class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig = TrackerConfig()) {
     private val tokenCount = lyrics.tokens.size
+    /** For each line, the number of non-spacer lines before it. */
+    private val lyricOrdinal: IntArray = IntArray(lyrics.lines.size).also { ord ->
+        var n = 0
+        for ((i, line) in lyrics.lines.withIndex()) { ord[i] = n; if (!line.isSpacer) n++ }
+    }
 
     private var state = TrackerState.Listening
     private var basePos = 0.0
@@ -35,8 +40,9 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
         if (audioPresent || lastAudioMs == null) lastAudioMs = nowMs
         val lostDue = hasLocked && nowMs - lastLockMs >= config.lostAfterMs
 
-        val result = locate(heard, wholeSong = !hasLocked || lostDue)
-        if (result != null && isLock(result)) {
+        val wholeSong = !hasLocked || lostDue
+        val result = locate(heard, wholeSong)
+        if (result != null && isLock(result, wholeSong)) {
             applyLock(nowMs, result)
         } else {
             state = when {
@@ -98,13 +104,27 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
         if (tokenCount == 0) return null
         val words = heard.map { LyricsParser.normalize(it.text) }.filter { it.isNotEmpty() }
         if (words.isEmpty()) return null
-        val preferAfter = if (!hasLocked) 0 else floor(lockAnchorPos).toInt()
+        // Back off by the snippet length so a short tail ending just before the anchor stays in this repeat.
+        val preferAfter = if (!hasLocked) 0 else maxOf(0, floor(lockAnchorPos).toInt() - words.size)
         val (from, to) = if (wholeSong) 0 to tokenCount else searchWindow(lineAt(basePos))
         return Aligner.locate(lyrics, words, from, to, preferAfter)
     }
 
-    private fun isLock(r: LocateResult): Boolean =
-        r.matchedCount >= config.minLockTokens || (r.matchedCount >= 2 && r.confidence >= config.lockConfidence)
+    /**
+     * Whole-song searches need a run of `minLockTokens` consecutive matches. Windowed searches accept
+     * `minLockTokens` matches or a confident pair, except that a target more than one lyric line past the
+     * anchor's line also needs the consecutive run.
+     */
+    private fun isLock(r: LocateResult, wholeSong: Boolean): Boolean {
+        val strongRun = r.longestRun >= config.minLockTokens
+        if (wholeSong) return strongRun
+        val basic = r.matchedCount >= config.minLockTokens ||
+            (r.matchedCount >= 2 && r.confidence >= config.lockConfidence)
+        if (!basic) return false
+        val targetLine = lyrics.lineOfToken(r.endTokenIndex - 1)
+        val farAhead = lyricOrdinal[targetLine] - lyricOrdinal[lineAt(lockAnchorPos)] > 1
+        return !farAhead || strongRun
+    }
 
     private fun applyLock(nowMs: Long, r: LocateResult) {
         val newPos = r.endTokenIndex.toDouble().coerceIn(0.0, tokenCount.toDouble())

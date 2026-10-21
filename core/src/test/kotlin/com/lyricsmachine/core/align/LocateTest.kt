@@ -16,6 +16,7 @@ class LocateTest {
         assertNotNull(r)
         assertEquals(6, r!!.endTokenIndex)
         assertEquals(3, r.matchedCount)
+        assertEquals(3, r.longestRun)
         assertEquals(1.0, r.confidence, 1e-9)
     }
 
@@ -46,6 +47,17 @@ class LocateTest {
         assertNotNull(r)
         assertEquals(7, r!!.endTokenIndex)
         assertTrue(r.confidence > 0.5)
+        assertEquals(3, r.matchedCount)
+        assertEquals(2, r.longestRun) // "quiet river" after the misheard word
+    }
+
+    @Test fun `longestRun counts only consecutive matches`() {
+        val l = LyricsParser.parse("i walk the road alone tonight\nand you are there beside me")
+        val scattered = Aligner.locate(l, words("i the you"), 0, l.tokens.size, 0)
+        if (scattered != null) assertTrue(scattered.longestRun < 3, "$scattered")
+        val run = Aligner.locate(l, words("walk the road"), 0, l.tokens.size, 0)!!
+        assertEquals(3, run.longestRun)
+        assertEquals(4, run.endTokenIndex)
     }
 
     @Test fun `empty heard or empty strings give null`() {

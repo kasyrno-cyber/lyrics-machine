@@ -183,9 +183,14 @@ object Aligner {
         var j = chosen
         var i = colBestRow[chosen]
         var matched = 0
+        var run = 0
+        var longestRun = 0
         while (j > 0 && i > 0 && score[j * w + i] > 0.0) {
-            when (move[j * w + i]) {
-                DIAG -> { if (diagMatch[j * w + i]) matched++; j--; i-- }
+            val step = move[j * w + i]
+            val isMatchStep = step == DIAG && diagMatch[j * w + i]
+            if (isMatchStep) { matched++; run++; if (run > longestRun) longestRun = run } else run = 0
+            when (step) {
+                DIAG -> { j--; i-- }
                 LYRIC_GAP -> j--
                 HEARD_GAP -> i--
                 else -> break
@@ -193,7 +198,7 @@ object Aligner {
         }
         if (matched < 2) return null
         val confidence = (colBest[chosen] / (MATCH_MULTIPLIER * m)).coerceIn(0.0, 1.0)
-        return LocateResult(from + chosen, matched, confidence)
+        return LocateResult(from + chosen, matched, confidence, longestRun)
     }
 
     private fun interpolate(starts: LongArray, ends: LongArray, matched: BooleanArray) {
