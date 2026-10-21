@@ -86,4 +86,28 @@ class ChunkedTranscriberTest {
         assertTrue(failure is CancellationException)
         assertEquals(1, engine.calls)
     }
+
+    @Test fun `cancellation during the final chunk never reports completion`() = runTest {
+        // totalSamples 0: no per-chunk progress, only the final 1f; exact total: the last chunk's progress is 1f.
+        for (total in listOf(0L, 30L)) {
+            var job: Job? = null
+            val engine = FakeEngine { if (it == 2) job!!.cancel() } // non-cooperative, like a JNI call
+            val progress = mutableListOf<Float>()
+            var failure: Throwable? = null
+            job = launch {
+                try {
+                    ChunkedTranscriber(engine).transcribe(generateSequence { FloatArray(10) }.take(3), total, null) {
+                        progress += it
+                    }
+                } catch (e: Throwable) {
+                    failure = e
+                    throw e
+                }
+            }
+            job.join()
+            assertTrue(failure is CancellationException, "total=$total failure=$failure")
+            assertEquals(3, engine.calls)
+            assertFalse(1f in progress, "total=$total progress=$progress")
+        }
+    }
 }

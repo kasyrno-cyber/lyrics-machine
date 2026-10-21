@@ -1,7 +1,7 @@
 package com.lyricsmachine.core.speech
 
 import com.lyricsmachine.core.Lang
-import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 
 /**
@@ -20,17 +20,20 @@ class ChunkedTranscriber(private val engine: SpeechEngine, val chunkMs: Long = 3
         var consumed = 0L
         var lastReported = -1f
         for (chunk in chunks) {
-            coroutineContext.ensureActive()
+            currentCoroutineContext().ensureActive()
             val offsetMs = consumed * 1000L / SAMPLE_RATE
-            for (w in engine.transcribe(chunk, language)) {
-                out += w.copy(startMs = w.startMs + offsetMs, endMs = w.endMs + offsetMs)
-            }
+            val words = engine.transcribe(chunk, language)
+            // The engine may not suspend (JNI), so check again before reporting this chunk's progress.
+            currentCoroutineContext().ensureActive()
+            for (w in words) out += w.copy(startMs = w.startMs + offsetMs, endMs = w.endMs + offsetMs)
             consumed += chunk.size
             if (totalSamples > 0) {
                 lastReported = (consumed.toDouble() / totalSamples).toFloat().coerceIn(0f, 1f)
                 onProgress(lastReported)
             }
         }
+        // A cancel during the last (non-cooperative) engine call must not be reported as completion.
+        currentCoroutineContext().ensureActive()
         if (lastReported != 1f) onProgress(1f)
         return out
     }
