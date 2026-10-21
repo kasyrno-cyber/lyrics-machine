@@ -147,8 +147,7 @@ class SingViewModelTest {
 
         playbacks.single().position.value = PlaybackPosition(5, 2, 0.5f)
         assertEquals(5, vm.state.value.currentLine)
-        assertEquals(2, vm.state.value.currentWord)
-        assertEquals(0.5f, vm.state.value.wordProgress, 0.001f)
+        assertEquals(1, vm.state.value.currentVerse)
 
         vm.toggle()
         assertEquals(1, playbacks.single().plays)
@@ -174,8 +173,7 @@ class SingViewModelTest {
         val tokenOfLine5Word1 = parsed.firstTokenOfLine(5)!! + 1
         lives.single().snapshot.value = TrackerSnapshot(TrackerState.Locked, tokenOfLine5Word1 + 0.25, 5)
         assertEquals(5, vm.state.value.currentLine)
-        assertEquals(1, vm.state.value.currentWord)
-        assertEquals(0.25f, vm.state.value.wordProgress, 0.001f)
+        assertEquals(1, vm.state.value.currentVerse)
         assertEquals(TrackerState.Locked, vm.state.value.trackerState)
     }
 
@@ -447,10 +445,74 @@ class SingViewModelTest {
 
     @Test fun `tapping the next verse preview goes to its first line`() {
         val vm = vm()
-        val next = vm.state.value.verses[1].lineIndices.first()
-        vm.tapLine(next) // what the preview does
+        assertEquals(5, vm.nextVersePreviewLine())
+        assertEquals(5, vm.state.value.previewLine)
+        vm.tapPreview()
         assertEquals(listOf(5), playbacks.single().seeks)
         assertEquals(1, vm.state.value.currentVerse)
+    }
+
+    @Test fun `preview line is null on the last verse and tapPreview does nothing`() {
+        val vm = vm()
+        vm.nudge(1)
+        assertNull(vm.nextVersePreviewLine())
+        assertNull(vm.state.value.previewLine)
+        vm.tapPreview()
+        assertEquals(listOf(5), playbacks.single().seeks)
+        assertEquals(1, vm.state.value.currentVerse)
+    }
+
+    // Three verses: v0 = lines 0,1; v1 = lines 3,4; v2 = line 6.
+    private fun threeVerseVm(timedLines: List<Int>): SingViewModel {
+        song = song!!.copy(lyricsText = "Moss on the lamp\nTwo owls at dusk\n\nCopper kettle sings\nSteam over the sill\n\nLast ember glows")
+        timings = timedLines.map { LineTiming(it, it * 1_000L, it * 1_000L + 900) } to emptyList()
+        return vm()
+    }
+
+    @Test fun `playback nudge onto an untimed first line seeks to the verse's first timed line`() {
+        timings = listOf(LineTiming(1, 1_000, 5_000), LineTiming(2, 5_000, 10_000), LineTiming(6, 14_000, 18_000)) to emptyList()
+        val vm = vm()
+        vm.nudge(1) // verse 1 = lines 5,6; line 5 has no timing
+        assertEquals(listOf(6), playbacks.single().seeks)
+        assertEquals(6, vm.state.value.currentLine)
+        assertEquals(1, vm.state.value.currentVerse)
+    }
+
+    @Test fun `playback nudge skips verses without timed lines`() {
+        val vm = threeVerseVm(listOf(0, 1, 6))
+        vm.nudge(1)
+        assertEquals(listOf(6), playbacks.single().seeks)
+        assertEquals(2, vm.state.value.currentVerse)
+        vm.nudge(-1)
+        assertEquals(listOf(6, 0), playbacks.single().seeks)
+        assertEquals(0, vm.state.value.currentVerse)
+    }
+
+    @Test fun `playback nudge with nothing timed ahead does nothing`() {
+        val vm = threeVerseVm(listOf(0, 1))
+        vm.nudge(1)
+        assertTrue(playbacks.single().seeks.isEmpty())
+        assertEquals(0, vm.state.value.currentVerse)
+        assertEquals(0, vm.state.value.currentLine)
+    }
+
+    @Test fun `playback tap on an untimed line seeks to the next timed line`() {
+        timings = listOf(LineTiming(2, 5_000, 10_000), LineTiming(5, 10_000, 14_000), LineTiming(6, 14_000, 18_000)) to emptyList()
+        val vm = vm()
+        vm.tapLine(1)
+        assertEquals(listOf(2), playbacks.single().seeks)
+        assertEquals(2, vm.state.value.currentLine)
+    }
+
+    @Test fun `playback tap falls through to later verses then to the nearest earlier timed line`() {
+        val vm = threeVerseVm(listOf(0, 1, 6))
+        vm.tapLine(3) // verse 1 has nothing timed -> next verse
+        assertEquals(listOf(6), playbacks.single().seeks)
+        assertEquals(2, vm.state.value.currentVerse)
+        val vm2 = threeVerseVm(listOf(0, 1))
+        vm2.tapLine(6) // nothing at or after -> nearest before
+        assertEquals(listOf(1), playbacks.last().seeks)
+        assertEquals(1, vm2.state.value.currentLine)
     }
 
     @Test fun `nudge in live jumps to the verse start`() {
