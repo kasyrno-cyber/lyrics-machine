@@ -3,11 +3,16 @@ package com.lyricsmachine.core.lyrics
 /** A single lyric word: [display] as written, [token] normalised for matching (never empty). */
 data class LyricWord(val display: String, val token: String)
 
+/**
+ * One displayed row. [label] is the trimmed original text (LRC tags removed) of a spacer line that had
+ * visible text, such as "[Chorus]" or "(ooh sayang)"; null for blank lines and for non-spacer lines.
+ */
 data class LyricLine(
     val index: Int,
     val words: List<LyricWord>,
     val isSpacer: Boolean,
     val lrcStartMs: Long?,
+    val label: String? = null,
 )
 
 /** Reference to a word: [wordIndex] is the position within `lines[lineIndex].words`. */

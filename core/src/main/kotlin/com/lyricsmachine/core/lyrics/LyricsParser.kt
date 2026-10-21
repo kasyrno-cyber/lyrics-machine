@@ -6,6 +6,8 @@ import java.util.Locale
 object LyricsParser {
     private val METADATA = Regex("""^\s*\[(?:ar|ti|al|by|offset|length)\s*:[^\]]*]\s*$""", RegexOption.IGNORE_CASE)
     private val TIMESTAMP = Regex("""^\[(\d+):(\d{2})(?:[.:](\d{1,3}))?]""")
+    /** Enhanced-LRC per-word tags, e.g. `<00:12.50>`, anywhere in a line. */
+    private val WORD_TAG = Regex("""<\d+:\d{2}(?:[.:]\d{1,3})?>""")
     private val SPACER = Regex("""^\s*[\[(][^\])]*[\])]\s*$""")
     private val WHITESPACE = Regex("""\s+""")
     private val LINE_BREAK = Regex("""\r\n|\r|\n""")
@@ -16,13 +18,20 @@ object LyricsParser {
         val rows = raw.split(LINE_BREAK).dropLastWhile { it.isBlank() }
         for (rawLine in rows) {
             if (METADATA.matches(rawLine)) continue
-            val trimmed = rawLine.trim()
-            val ts = TIMESTAMP.find(trimmed)
-            val startMs = ts?.let { toMs(it) }
-            val text = if (ts != null) trimmed.substring(ts.value.length) else trimmed
+            // All leading line timestamps are stripped; only the first sets the start.
+            var rest = rawLine.trim()
+            var startMs: Long? = null
+            while (true) {
+                val ts = TIMESTAMP.find(rest) ?: break
+                if (startMs == null) startMs = toMs(ts)
+                rest = rest.substring(ts.value.length).trimStart()
+            }
+            val text = rest.replace(WORD_TAG, "").trim()
             val spacer = text.isBlank() || SPACER.matches(text)
             val words = if (spacer) emptyList() else toWords(text)
-            lines += LyricLine(lines.size, words, spacer || words.isEmpty(), startMs)
+            val isSpacer = spacer || words.isEmpty()
+            val label = if (isSpacer && text.isNotBlank()) text else null
+            lines += LyricLine(lines.size, words, isSpacer, startMs, label)
         }
         return Lyrics(lines)
     }

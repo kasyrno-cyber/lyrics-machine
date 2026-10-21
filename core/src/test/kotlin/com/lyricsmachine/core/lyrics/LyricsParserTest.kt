@@ -82,4 +82,34 @@ class LyricsParserTest {
         assertEquals(1, LyricsParser.parse("a\n\n\n").lines.size)
         assertEquals(0, l.lines.size); assertEquals(0, l.tokens.size)
     }
+
+    @Test fun `spacer lines keep their label text`() {
+        val l = LyricsParser.parse("[Chorus]\n(ooh sayang)\n\nbulan terang\n[00:20.00] [Bridge] \n[00:21.00]\n🎵🎵")
+        assertEquals(listOf("[Chorus]", "(ooh sayang)", null, null, "[Bridge]", null, "🎵🎵"), l.lines.map { it.label })
+        assertEquals(listOf(true, true, true, false, true, true, true), l.lines.map { it.isSpacer })
+        assertEquals(listOf("bulan", "terang"), l.tokens.map { it.token })
+        assertEquals(20_000L, l.lines[4].lrcStartMs)
+    }
+
+    @Test fun `multiple leading timestamps are all stripped and the first sets the start`() {
+        val l = LyricsParser.parse("[00:10.00][00:50.00]light\n[01:00][01:30.5] [02:00.250]two words")
+        assertEquals(listOf("light"), l.lines[0].words.map { it.display })
+        assertEquals(10_000L, l.lines[0].lrcStartMs)
+        assertEquals(listOf("two", "words"), l.lines[1].words.map { it.display })
+        assertEquals(60_000L, l.lines[1].lrcStartMs)
+        assertEquals(listOf("light", "two", "words"), l.tokens.map { it.token })
+    }
+
+    @Test fun `enhanced lrc inline word tags are stripped`() {
+        val l = LyricsParser.parse("[00:12.00]<00:12.00>the <00:12.50>lantern\nplain <00:13.10>glow<00:14.00>")
+        assertEquals(listOf("the", "lantern"), l.lines[0].words.map { it.display })
+        assertEquals(12_000L, l.lines[0].lrcStartMs)
+        assertEquals(listOf("plain", "glow"), l.lines[1].words.map { it.display })
+        assertEquals(listOf("the", "lantern", "plain", "glow"), l.tokens.map { it.token })
+    }
+
+    @Test fun `timestamp-only line with inline tags only is a blank spacer`() {
+        val l = LyricsParser.parse("[00:05.00]<00:05.00>\nhi")
+        assertEquals(true, l.lines[0].isSpacer); assertNull(l.lines[0].label); assertEquals(5_000L, l.lines[0].lrcStartMs)
+    }
 }
