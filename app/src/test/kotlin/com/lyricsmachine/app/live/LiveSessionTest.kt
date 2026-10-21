@@ -6,8 +6,10 @@ import com.lyricsmachine.core.lyrics.LyricsParser
 import com.lyricsmachine.core.speech.HeardWord
 import com.lyricsmachine.core.speech.SpeechEngine
 import com.lyricsmachine.core.tracker.TrackerState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -18,6 +20,7 @@ import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -60,6 +63,8 @@ class LiveSessionTest {
     ) : SpeechEngine, Closeable {
         var calls = 0
         var closed = 0
+        /** Called with the 1-based call number; a non-null result is thrown immediately (a ~0 ms failure). */
+        var failOn: (Int) -> Throwable? = { null }
         var closedWhileActive = false
         val languages = mutableListOf<Lang?>()
         private var active = 0
@@ -68,6 +73,7 @@ class LiveSessionTest {
             check(closed == 0) { "transcribe on closed engine" }
             calls++; stats.calls++
             languages += language
+            failOn(calls)?.let { throw it }
             active++; stats.active++
             stats.maxActive = maxOf(stats.maxActive, stats.active)
             try {
@@ -92,10 +98,12 @@ class LiveSessionTest {
         language: Lang? = Lang.EN,
         nonCancellable: Boolean = false,
         initialModel: ModelSpec = ModelSpec.BASE,
+        collectEvents: Boolean = true,
     ) {
         val stats = Stats()
         val mic = FakeMic()
         val requested = mutableListOf<ModelSpec>()
+        val logged = mutableListOf<Throwable>()
         val base = FakeEngine(ModelSpec.BASE, stats, baseDelay, words, nonCancellable)
         val tiny = FakeEngine(ModelSpec.TINY, stats, tinyDelay, words, nonCancellable)
         val dispatcher = StandardTestDispatcher(scope.testScheduler)
@@ -108,12 +116,15 @@ class LiveSessionTest {
             scope = scope.backgroundScope,
             trackerDispatcher = dispatcher,
             initialModel = initialModel,
+            log = { _, t -> logged += t },
         )
         val events = mutableListOf<LiveEvent>()
 
         init {
-            scope.backgroundScope.launch(UnconfinedTestDispatcher(scope.testScheduler)) {
-                session.events.toList(events)
+            if (collectEvents) {
+                scope.backgroundScope.launch(UnconfinedTestDispatcher(scope.testScheduler)) {
+                    session.events.toList(events)
+                }
             }
         }
 
@@ -279,6 +290,86 @@ class LiveSessionTest {
         h.advanceTo(2_401)
         assertEquals(1, h.base.languages.size)
         assertNull(h.base.languages.single())
+        h.session.stop()
+    }
+
+    @Test fun `failing base engine switches to tiny after three failures`() = runTest {
+        val h = Harness(this)
+        h.base.failOn = { IllegalStateException("out of memory") }
+        h.session.start()
+        h.loud()
+        h.advanceTo(6_001) // base fails at 2000, 4000, 6000
+        assertEquals(3, h.base.calls)
+        assertEquals(3, h.logged.size)
+        assertEquals(listOf(LiveEvent.SwitchedToTinyModel), h.events)
+        assertEquals(1, h.base.closed)
+        h.advanceTo(10_401) // tiny transcribes at 8000 and 10000
+        assertEquals(2, h.tiny.calls)
+        assertEquals(3, h.base.calls)
+        assertEquals(TrackerState.Locked, h.session.snapshot.value.state)
+        h.session.stop()
+    }
+
+    @Test fun `engine failed emitted once when both engines fail`() = runTest {
+        val h = Harness(this)
+        h.base.failOn = { IllegalStateException("base broken") }
+        h.tiny.failOn = { IllegalStateException("tiny broken") }
+        h.session.start()
+        h.loud()
+        h.advanceTo(30_000)
+        assertTrue(h.tiny.calls > 3)
+        assertEquals(listOf(LiveEvent.SwitchedToTinyModel, LiveEvent.EngineFailed), h.events)
+        h.session.stop()
+    }
+
+    @Test fun `engine failed emitted when the switch to tiny fails`() = runTest {
+        val h = Harness(this)
+        h.base.failOn = { IllegalStateException("base broken") }
+        val session = LiveSession(
+            lyrics = song, mic = h.mic,
+            engineFor = { spec -> if (spec == ModelSpec.BASE) h.base else error("tiny not downloaded") },
+            language = Lang.EN, clock = { currentTime }, scope = backgroundScope,
+            trackerDispatcher = StandardTestDispatcher(testScheduler), log = { _, _ -> },
+        )
+        val events = mutableListOf<LiveEvent>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { session.events.toList(events) }
+        session.start()
+        h.mic.emit(FloatArray(16_000) { if (it % 2 == 0) 0.5f else -0.5f })
+        advanceTimeBy(20_000); runCurrent()
+        assertEquals(listOf(LiveEvent.EngineFailed), events)
+        session.stop()
+    }
+
+    @Test fun `a success between failures resets the failure count`() = runTest {
+        val h = Harness(this)
+        h.base.failOn = { call -> if (call % 3 != 0) IllegalStateException("flaky") else null }
+        h.session.start()
+        h.loud()
+        h.advanceTo(20_001) // 10 calls: fail, fail, ok, fail, fail, ok, ...
+        assertEquals(10, h.base.calls)
+        assertEquals(listOf(ModelSpec.BASE), h.requested)
+        assertTrue(h.events.isEmpty())
+        h.session.stop()
+    }
+
+    @Test fun `stray cancellation from the engine does not stop later ticks`() = runTest {
+        val h = Harness(this)
+        h.base.failOn = { call -> if (call == 1) CancellationException("engine-internal") else null }
+        h.session.start()
+        h.loud()
+        h.advanceTo(4_401)
+        assertEquals(2, h.base.calls)
+        assertEquals(TrackerState.Locked, h.session.snapshot.value.state)
+        assertEquals(1, h.logged.size)
+        h.session.stop()
+    }
+
+    @Test fun `event emitted before collection is still received`() = runTest {
+        val h = Harness(this, tinyDelay = 2_500, initialModel = ModelSpec.TINY, collectEvents = false)
+        h.session.start()
+        h.loud()
+        h.advanceTo(20_000) // StillTooSlow emitted at 10500 with no collector
+        assertEquals(LiveEvent.StillTooSlow, withTimeout(1_000) { h.session.events.first() })
         h.session.stop()
     }
 }
