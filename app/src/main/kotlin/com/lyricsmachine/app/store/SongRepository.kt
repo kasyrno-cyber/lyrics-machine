@@ -44,12 +44,14 @@ class SongRepository(
         val existing = if (song.id != 0L) dao.get(song.id) else null
         val id = dao.insertSong(song)
         if (existing != null && (existing.lyricsText != song.lyricsText || existing.audioUri != song.audioUri)) {
+            dao.deleteTimings(id)
             dao.deleteAnalysis(id)
         }
         id
     }
 
     suspend fun delete(id: Long) = db.withTransaction {
+        dao.deleteTimings(id)
         dao.deleteAnalysis(id)
         dao.deleteSong(id)
     }
