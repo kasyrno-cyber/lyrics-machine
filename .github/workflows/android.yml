@@ -57,7 +57,7 @@ jobs:
           {
             echo '### Gradle log (last 150 lines)'
             echo '```'
-            tail -n 150 gradle.log 2>&1 || echo "(no gradle.log: failure happened before the Gradle step)"
+            grep -vE '^[[:space:]]+at ' gradle.log 2>&1 | tail -n 150 || echo "(no gradle.log: failure happened before the Gradle step)"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY" > report.md
           gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -f body="$(cat report.md)" || true
