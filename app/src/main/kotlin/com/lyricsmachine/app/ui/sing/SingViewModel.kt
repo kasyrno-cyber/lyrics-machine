@@ -1,0 +1,530 @@
+package com.lyricsmachine.app.ui.sing
+
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import com.lyricsmachine.app.analysis.chooseModel
+import com.lyricsmachine.app.live.LiveEvent
+import com.lyricsmachine.app.speech.ModelSpec
+import com.lyricsmachine.app.speech.ModelState
+import com.lyricsmachine.app.store.SongEntity
+import com.lyricsmachine.app.store.SongMode
+import com.lyricsmachine.core.Lang
+import com.lyricsmachine.core.align.LineTiming
+import com.lyricsmachine.core.align.WordTiming
+import com.lyricsmachine.core.lyrics.LyricLine
+import com.lyricsmachine.core.lyrics.Lyrics
+import com.lyricsmachine.core.lyrics.LyricsParser
+import com.lyricsmachine.core.lyrics.Verse
+import com.lyricsmachine.core.lyrics.Verses
+import com.lyricsmachine.core.playback.PlaybackPosition
+import com.lyricsmachine.core.playback.TimingLookup
+import com.lyricsmachine.core.tracker.TrackerSnapshot
+import com.lyricsmachine.core.tracker.TrackerState
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+
+object SingCopy {
+    const val MIC_DENIED = "Microphone access is needed to follow you live. Tap to allow."
+    const val SWITCHED_TO_TINY = "Switched to a faster model for this device."
+    const val STILL_TOO_SLOW = "This device is struggling — the lyrics may lag."
+    const val ENGINE_FAILED = "Live tracking stopped working. Tap a line to follow along manually."
+    const val MODEL_MISSING = "The speech model isn't downloaded yet."
+    const val AUDIO_UNPLAYABLE = "This audio file can't be played. You can sing with the microphone instead."
+    const val NO_MODEL = "The speech model isn't downloaded yet. Tap a line or use the arrows to follow along."
+    const val NO_TIMINGS = "This song has no timings yet. Tap a line or use the arrows to follow along."
+    const val LYRICS_ONLY = "Showing the lyrics only. Tap a line or use the arrows to follow along."
+    const val MIC_FAILED = "The microphone couldn't be started. Tap a line to follow along manually."
+    const val NOT_FOUND = "This song couldn't be found."
+    const val AUDIO_GONE = "This song's audio file can't be opened any more — following you with the microphone instead."
+}
+
+/** Text of the tracker state chip shown while listening live. */
+fun trackerLabel(state: TrackerState): String = when (state) {
+    TrackerState.Listening -> "Listening"
+    TrackerState.Locked, TrackerState.Coasting -> "Following"
+    TrackerState.Paused -> "Paused"
+    TrackerState.Lost -> "Lost — tap a line to help"
+}
+
+enum class SingMode { PLAYBACK, LIVE, MANUAL }
+
+enum class MessageAction { ALLOW_MIC, USE_MIC }
+
+/** One queued snackbar; [id] is unique per view model, so the same [text] twice is still two notices. */
+data class Notice(val id: Long, val text: String)
+
+/**
+ * What the Sing screen shows: the verse at [currentVerse] (of [verses]) and a preview of the next one. It is
+ * derived from [currentLine] (verse 0 while that is null); [previewLine] is the first line of the next verse,
+ * or null on the last one. [message] is a persistent notice (with an
+ * optional [messageAction]); [snackbar] is the head of a queue of one-off notices, acknowledged by id with
+ * [SingViewModel.snackbarShown]. [canToggle] is false once playback has failed (no dead Play button).
+ * [sentToSettings] is true while the user is in app settings after tapping the mic-denied notice. [requestMic] asks the screen to check/request RECORD_AUDIO and report back
+ * through [SingViewModel.onMicPermissionResult].
+ */
+data class SingUiState(
+    val lines: List<LyricLine> = emptyList(),
+    val verses: List<Verse> = emptyList(),
+    val currentVerse: Int? = null,
+    val currentLine: Int? = null,
+    val previewLine: Int? = null,
+    val mode: SingMode = SingMode.MANUAL,
+    val isRunning: Boolean = false,
+    val trackerState: TrackerState? = null,
+    val message: String? = null,
+    val title: String = "",
+    val loading: Boolean = true,
+    val messageAction: MessageAction? = null,
+    val snackbar: Notice? = null,
+    val requestMic: Boolean = false,
+    val positionMs: Long = 0L,
+    val durationMs: Long? = null,
+    val sentToSettings: Boolean = false,
+    val canToggle: Boolean = true,
+)
+
+/** What the view model needs from [com.lyricsmachine.app.playback.PlaybackSync]; faked in tests. */
+interface PlaybackLike {
+    val position: StateFlow<PlaybackPosition>
+    val isPlaying: StateFlow<Boolean>
+    val positionMs: StateFlow<Long>
+    val durationMs: StateFlow<Long?>
+    val error: StateFlow<String?>
+    fun play()
+    fun pause()
+    fun seekToLine(lineIndex: Int)
+    fun close()
+}
+
+/** What the view model needs from [com.lyricsmachine.app.live.LiveSession]; faked in tests. */
+interface LiveLike {
+    val snapshot: StateFlow<TrackerSnapshot>
+    val events: SharedFlow<LiveEvent>
+    fun start()
+    fun stop()
+    fun jumpTo(lineIndex: Int)
+}
+
+/**
+ * Drives the Sing screen in one of three modes:
+ * - PLAYBACK (AUDIO_READY with timings): [PlaybackLike] plays the audio and its position picks the line.
+ * - LIVE (LYRICS_ONLY / AUDIO_NOT_ANALYSED): a [LiveLike] session follows the microphone.
+ * - MANUAL (`manual` nav arg, no model, mic denied, no timings, engine failure): taps and nudges only.
+ *
+ * In LIVE, listening starts as soon as the mic permission is granted on entry; in PLAYBACK nothing plays
+ * until the user taps Play. Nothing resumes after backgrounding. Live sessions cannot be restarted, so every Listen
+ * creates a new one. Each [LiveEvent] kind is shown at most once per session even if replayed.
+ */
+class SingViewModel(
+    private val songId: Long,
+    private val manual: Boolean,
+    private val loadSong: suspend (Long) -> SongEntity?,
+    private val songMode: suspend (Long) -> SongMode?,
+    private val loadTimings: suspend (Long) -> Pair<List<LineTiming>, List<WordTiming>>,
+    private val modelState: suspend (ModelSpec) -> ModelState,
+    /** Called on Main with the song's audio URI. */
+    private val playbackFactory: (String, TimingLookup) -> PlaybackLike,
+    private val liveFactory: (Lyrics, Lang?, ModelSpec, CoroutineScope) -> LiveLike,
+) : ViewModel() {
+    private val _state = MutableStateFlow(SingUiState())
+    val state: StateFlow<SingUiState> = _state.asStateFlow()
+
+    private var lyrics = Lyrics(emptyList())
+    private var language: Lang? = null
+    private var lyricLines: List<Int> = emptyList()
+    private var verses: List<Verse> = emptyList()
+    private var timedLines: Set<Int> = emptySet()
+
+    private var playback: PlaybackLike? = null
+    private var playbackJob: Job? = null
+    private var playbackErrorShown = false
+
+    private var live: LiveLike? = null
+    private var liveJob: Job? = null
+    private var liveSpec: ModelSpec? = null
+    private val handledEvents = mutableSetOf<LiveEvent>()
+    private val snackbars = ArrayDeque<Notice>()
+    private var nextNoticeId = 0L
+
+    init {
+        viewModelScope.launch { load() }
+    }
+
+    private suspend fun load() {
+        val song = safely { loadSong(songId) }
+        if (song == null) {
+            upd { it.copy(loading = false, message = SingCopy.NOT_FOUND) }
+            return
+        }
+        lyrics = LyricsParser.parse(song.lyricsText)
+        language = song.language
+        lyricLines = lyrics.lines.filter { !it.isSpacer }.map { it.index }
+        verses = Verses.of(lyrics)
+        upd {
+            it.copy(title = song.title, lines = lyrics.lines, verses = verses, loading = false, currentLine = lyricLines.firstOrNull())
+        }
+        if (manual) {
+            enterManual(SingCopy.LYRICS_ONLY)
+            return
+        }
+        val uri = song.audioUri
+        val songMode = safely { songMode(songId) }
+        when {
+            songMode == SongMode.AUDIO_READY && uri != null -> enterPlayback(uri)
+            // The repository reports LYRICS_ONLY for a song whose stored audio can no longer be opened.
+            songMode == SongMode.LYRICS_ONLY && uri != null -> enterLive(SingCopy.AUDIO_GONE)
+            else -> enterLive()
+        }
+    }
+
+    private suspend fun enterPlayback(uri: String) {
+        val (lines, words) = safely { loadTimings(songId) } ?: (emptyList<LineTiming>() to emptyList())
+        if (lines.isEmpty()) {
+            enterManual(SingCopy.NO_TIMINGS)
+            return
+        }
+        val pb = try {
+            playbackFactory(uri, TimingLookup(lines, words))
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            enterManual(SingCopy.AUDIO_UNPLAYABLE, MessageAction.USE_MIC)
+            return
+        }
+        playback = pb
+        playbackErrorShown = false
+        timedLines = lines.map { it.lineIndex }.toSet()
+        upd { it.copy(mode = SingMode.PLAYBACK, isRunning = false, canToggle = true) }
+        playbackJob = viewModelScope.launch {
+            combine(pb.position, pb.isPlaying, pb.positionMs, pb.durationMs, pb.error) { p, playing, ms, dur, err ->
+                PlaybackFrame(p, playing, ms, dur, err)
+            }.collect { f -> applyPlayback(f) }
+        }
+    }
+
+    private class PlaybackFrame(
+        val position: PlaybackPosition, val playing: Boolean, val ms: Long, val duration: Long?, val error: String?,
+    )
+
+    private fun applyPlayback(f: PlaybackFrame) {
+        upd {
+            if (it.mode != SingMode.PLAYBACK) return@upd it
+            it.copy(
+                currentLine = f.position.lineIndex,
+                isRunning = f.playing && f.error == null,
+                positionMs = f.ms,
+                durationMs = f.duration,
+            )
+        }
+        if (f.error != null && !playbackErrorShown) {
+            // Never show the player's own text: it is technical and not translated.
+            playbackErrorShown = true
+            upd {
+                it.copy(message = SingCopy.AUDIO_UNPLAYABLE, messageAction = MessageAction.USE_MIC, canToggle = false)
+            }
+        }
+    }
+
+    /**
+     * Picks the model and asks the screen for the mic permission; MANUAL when no model is ready. [notice] is
+     * shown while listening and kept when the session starts.
+     */
+    private suspend fun enterLive(notice: String? = null) {
+        val chosen = safely { chooseModel(modelState) }
+        if (chosen == null) {
+            enterManual(SingCopy.NO_MODEL)
+            return
+        }
+        liveSpec = chosen.first
+        upd {
+            it.copy(mode = SingMode.LIVE, isRunning = false, requestMic = true, message = notice, messageAction = null)
+        }
+    }
+
+    private fun enterManual(message: String?, action: MessageAction? = null) {
+        upd {
+            it.copy(
+                mode = SingMode.MANUAL,
+                isRunning = false,
+                trackerState = null,
+                requestMic = false,
+                currentLine = it.currentLine ?: lyricLines.firstOrNull(),
+                message = message ?: it.message,
+                messageAction = if (message != null) action else it.messageAction,
+            )
+        }
+    }
+
+    /** The screen's answer to [SingUiState.requestMic] (or to a retry after [requestMicAgain]). */
+    fun onMicPermissionResult(granted: Boolean) {
+        upd { it.copy(requestMic = false) }
+        if (!granted) {
+            stopLive()
+            enterManual(SingCopy.MIC_DENIED, MessageAction.ALLOW_MIC)
+            return
+        }
+        if (liveSpec == null) {
+            viewModelScope.launch { enterLive() }
+            return
+        }
+        startLive()
+    }
+
+    /** The user tapped the mic-denied notice: ask for the permission again. */
+    fun requestMicAgain() {
+        if (liveSpec == null) return
+        upd { it.copy(requestMic = true) }
+    }
+
+    private fun startLive() {
+        val spec = liveSpec ?: return
+        stopLive()
+        val resumeLine = _state.value.currentLine
+        val session = try {
+            liveFactory(lyrics, language, spec, viewModelScope)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            enterManual(SingCopy.MIC_FAILED)
+            return
+        }
+        try {
+            session.start()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            try { session.stop() } catch (_: Exception) {}
+            enterManual(SingCopy.MIC_FAILED)
+            return
+        }
+        live = session
+        handledEvents.clear()
+        upd {
+            // Clears stale notices (mic denied, playback failed) but keeps telling the user why the audio is gone.
+            val keep = it.message == SingCopy.AUDIO_GONE
+            it.copy(
+                mode = SingMode.LIVE, isRunning = true, message = if (keep) it.message else null,
+                messageAction = if (keep) it.messageAction else null, requestMic = false, canToggle = true,
+            )
+        }
+        liveJob = viewModelScope.launch {
+            launch { session.snapshot.collect { applySnapshot(session, it) } }
+            launch { session.events.collect { onLiveEvent(session, it) } }
+        }
+        if (resumeLine != null && resumeLine != lyricLines.firstOrNull()) {
+            session.jumpTo(resumeLine)
+            upd { it.copy(currentLine = resumeLine) }
+        }
+    }
+
+    private fun applySnapshot(session: LiveLike, snap: TrackerSnapshot) {
+        if (session !== live) return
+        upd {
+            it.copy(
+                currentLine = snap.lineIndex,
+                trackerState = snap.state,
+            )
+        }
+    }
+
+    private fun onLiveEvent(session: LiveLike, event: LiveEvent) {
+        if (session !== live || !handledEvents.add(event)) return
+        when (event) {
+            LiveEvent.SwitchedToTinyModel -> {
+                liveSpec = ModelSpec.TINY // a restarted session should not try base again
+                showSnackbar(SingCopy.SWITCHED_TO_TINY)
+            }
+            LiveEvent.StillTooSlow -> showSnackbar(SingCopy.STILL_TOO_SLOW)
+            LiveEvent.EngineFailed -> {
+                showSnackbar(SingCopy.ENGINE_FAILED)
+                stopLive()
+                // "following you with the microphone" is no longer true.
+                if (_state.value.message == SingCopy.AUDIO_GONE) dismissMessage()
+                enterManual(null)
+            }
+        }
+    }
+
+    private fun stopLive() {
+        val session = live ?: return
+        live = null
+        liveJob?.cancel()
+        liveJob = null
+        try { session.stop() } catch (_: Exception) {}
+        upd { it.copy(isRunning = false, trackerState = null) }
+    }
+
+    private fun closePlayback() {
+        playbackJob?.cancel()
+        playbackJob = null
+        val pb = playback ?: return
+        playback = null
+        try { pb.close() } catch (_: Exception) {}
+        upd { it.copy(isRunning = false, positionMs = 0L, durationMs = null) }
+    }
+
+    /** PLAYBACK: play/pause. LIVE: start (via the permission check, with a new session) or stop. MANUAL: no-op. */
+    fun toggle() {
+        if (!_state.value.canToggle) return
+        when (_state.value.mode) {
+            SingMode.PLAYBACK -> {
+                val pb = playback ?: return
+                if (pb.isPlaying.value) pb.pause() else pb.play()
+            }
+            SingMode.LIVE -> if (live != null) stopLive() else upd { it.copy(requestMic = true) }
+            SingMode.MANUAL -> Unit
+        }
+    }
+
+    /**
+     * Moves [delta] verses to the first lyric line of the target verse, clamping at the first and last verse.
+     * With no current line the first verse counts as current.
+     */
+    fun nudge(delta: Int) {
+        if (verses.isEmpty() || delta == 0) return
+        val from = _state.value.currentVerse ?: 0
+        val target = (from + delta).coerceIn(0, verses.lastIndex)
+        if (!seeksByTiming()) {
+            moveTo(verses[target].lineIndices.first())
+            return
+        }
+        // The player only seeks to timed lines: take the first timed line of the target verse, else keep going
+        // in the nudge direction; do nothing when nothing is timed that way.
+        val step = if (delta > 0) 1 else -1
+        var v = target
+        while (v in verses.indices) {
+            verses[v].lineIndices.firstOrNull { it in timedLines }?.let { moveTo(it); return }
+            v += step
+        }
+    }
+
+    /**
+     * Moves to [index]; a spacer moves to the next lyric line (or the last one when none follows). In PLAYBACK
+     * an untimed line moves to the next timed line, else the nearest timed line before it.
+     */
+    fun tapLine(index: Int) {
+        if (lyricLines.isEmpty()) return
+        val line = lyricLines.firstOrNull { it >= index } ?: lyricLines.last()
+        if (!seeksByTiming()) {
+            moveTo(line)
+            return
+        }
+        val target = lyricLines.firstOrNull { it >= line && it in timedLines }
+            ?: lyricLines.lastOrNull { it < line && it in timedLines }
+            ?: return
+        moveTo(target)
+    }
+
+    /** First line of the verse after the current one, or null on the last verse. */
+    fun nextVersePreviewLine(): Int? = _state.value.previewLine
+
+    /** The preview was tapped: jump to [nextVersePreviewLine] the way [tapLine] does. */
+    fun tapPreview() {
+        nextVersePreviewLine()?.let { tapLine(it) }
+    }
+
+    /** True when moving must land on a timed line because the player seeks to line starts. */
+    private fun seeksByTiming() = _state.value.mode == SingMode.PLAYBACK && _state.value.canToggle
+
+    private fun moveTo(line: Int) {
+        when (_state.value.mode) {
+            SingMode.PLAYBACK -> if (_state.value.canToggle) playback?.seekToLine(line) // errored: like MANUAL
+            SingMode.LIVE -> live?.jumpTo(line)
+            SingMode.MANUAL -> Unit
+        }
+        upd { it.copy(currentLine = line) }
+    }
+
+    /** "Use microphone instead": stops playback and starts LIVE, or explains that no model is downloaded. */
+    fun useMicrophone() {
+        val s = _state.value
+        if (s.mode == SingMode.LIVE) return
+        if (s.mode == SingMode.MANUAL && s.messageAction != MessageAction.USE_MIC) return
+        viewModelScope.launch {
+            val chosen = safely { chooseModel(modelState) }
+            if (chosen == null) {
+                upd { it.copy(message = SingCopy.MODEL_MISSING, messageAction = null) }
+                return@launch
+            }
+            liveSpec = chosen.first
+            closePlayback()
+            upd {
+                it.copy(
+                    mode = SingMode.LIVE, isRunning = false, requestMic = true, message = null, messageAction = null,
+                    canToggle = true,
+                )
+            }
+        }
+    }
+
+    /** Removes the notice with [id]; a repeated or stale acknowledgement changes nothing. */
+    fun snackbarShown(id: Long) {
+        snackbars.removeAll { it.id == id }
+        upd { it.copy(snackbar = snackbars.firstOrNull()) }
+    }
+
+    /** The mic-denied notice sent the user to app settings ("don't ask again" was chosen). */
+    fun openedSettingsForMic() {
+        upd { it.copy(sentToSettings = true) }
+    }
+
+    /** The screen is visible again; starts listening only if we sent the user to settings and they allowed the mic. */
+    fun onReturnedFromSettings(granted: Boolean) {
+        if (!_state.value.sentToSettings) return
+        upd { it.copy(sentToSettings = false) }
+        if (granted) onMicPermissionResult(true)
+    }
+
+    fun dismissMessage() {
+        upd { it.copy(message = null, messageAction = null) }
+    }
+
+    /** ON_STOP: pause playback and stop listening; nothing resumes until the user taps again. */
+    fun onBackgrounded() {
+        playback?.pause()
+        stopLive()
+    }
+
+    override fun onCleared() {
+        stopLive()
+        closePlayback()
+    }
+
+    private fun showSnackbar(text: String) {
+        snackbars.addLast(Notice(nextNoticeId++, text))
+        upd { it.copy(snackbar = snackbars.first()) }
+    }
+
+    /** Like MutableStateFlow.update, then re-derives [SingUiState.currentVerse] from the current line. */
+    private fun upd(transform: (SingUiState) -> SingUiState) {
+        _state.update { old ->
+            val n = transform(old)
+            if (n.currentLine == old.currentLine && n.verses === old.verses) {
+                return@update n.copy(currentVerse = old.currentVerse, previewLine = old.previewLine)
+            }
+            val line = n.currentLine
+            val verse = when {
+                n.verses.isEmpty() -> null
+                line == null -> 0
+                else -> Verses.verseOfLine(n.verses, line) ?: n.verses.lastIndex
+            }
+            n.copy(currentVerse = verse, previewLine = verse?.let { n.verses.getOrNull(it + 1)?.lineIndices?.first() })
+        }
+    }
+
+    private suspend fun <T> safely(block: suspend () -> T): T? = try {
+        block()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+}
