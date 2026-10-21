@@ -25,6 +25,8 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
     /** Previous chunk lock used for pace observations; cleared by a user jump. */
     private var paceAnchorPos: Double? = null
     private var paceAnchorMs = 0L
+    /** Position set by the last lock or user jump; used as preferAfter (never the extrapolated position). */
+    private var lockAnchorPos = 0.0
     /** Last time audio was present; null until the first chunk. */
     private var lastAudioMs: Long? = null
 
@@ -60,6 +62,7 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
         lastLockLine = lineAt(basePos)
         hasLocked = true
         paceAnchorPos = null
+        lockAnchorPos = basePos
         state = TrackerState.Locked
         return snapshot(nowMs)
     }
@@ -84,7 +87,7 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
         if (tokenCount == 0) return null
         val words = heard.map { LyricsParser.normalize(it.text) }.filter { it.isNotEmpty() }
         if (words.isEmpty()) return null
-        val preferAfter = if (!hasLocked) 0 else floor(basePos).toInt()
+        val preferAfter = if (!hasLocked) 0 else floor(lockAnchorPos).toInt()
         val (from, to) = if (wholeSong) 0 to tokenCount else searchWindow(lineAt(basePos))
         return Aligner.locate(lyrics, words, from, to, preferAfter)
     }
@@ -102,6 +105,7 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
             }
         }
         paceAnchorPos = newPos
+        lockAnchorPos = newPos
         paceAnchorMs = nowMs
         basePos = newPos
         baseMs = nowMs

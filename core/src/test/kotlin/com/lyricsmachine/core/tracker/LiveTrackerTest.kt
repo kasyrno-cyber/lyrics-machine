@@ -129,7 +129,20 @@ class LiveTrackerTest {
         val s = t.onChunk(2_000, say(chorus), audioPresent = true)
         assertEquals(TrackerState.Locked, s.state)
         assertNotEquals(11.0, s.tokenPosition)
-        assertTrue(s.tokenPosition == 23.0 || s.tokenPosition == 33.0, "pos ${s.tokenPosition}")
+        // Re-hearing the current repeat stays in chorus 2 (no skip to chorus 3).
+        assertEquals(23.0, s.tokenPosition, 1e-9)
+        assertEquals(4, s.lineIndex)
+    }
+
+    @Test fun `moves forward to the next chorus when its preceding line is heard`() {
+        val t = tracker()
+        val locked = t.onChunk(0, say("$opening light the night"), audioPresent = true)
+        assertEquals(8.0, locked.tokenPosition, 1e-9) // inside chorus 1
+        t.onChunk(2_000, emptyList(), audioPresent = true) // coasting
+        val s = t.onChunk(4_000, say("carry me home over the hills light the night we sing"), audioPresent = true)
+        assertEquals(TrackerState.Locked, s.state)
+        assertEquals(22.0, s.tokenPosition, 1e-9) // chorus 2, not 3
+        assertEquals(3, s.lineIndex)
     }
 
     @Test fun `user jump overrides position`() {
