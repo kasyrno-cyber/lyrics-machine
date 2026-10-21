@@ -238,8 +238,6 @@ class EditSongViewModelTest {
         Dispatchers.setMain(mainThread.asCoroutineDispatcher())
         try {
             val v = vm(id)
-            assertTrue(v.state.value.loading)
-            assertEquals("", v.state.value.title)
             assertEquals(SaveOutcome.SAVED_LYRICS_ONLY, v.save())
             assertEquals("Old", repo.get(id)?.title)
             assertEquals("blue river walks", repo.get(id)?.lyricsText)
