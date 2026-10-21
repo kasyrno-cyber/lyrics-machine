@@ -8,6 +8,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.util.UUID
 
@@ -27,6 +28,13 @@ object AnalysisWork {
     fun cancel(context: Context, songId: Long) {
         WorkManager.getInstance(context).cancelUniqueWork(uniqueName(songId))
     }
+
+    /** True while unique work for [songId] is ENQUEUED, RUNNING or BLOCKED. */
+    suspend fun hasActiveWork(context: Context, songId: Long): Boolean =
+        WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(uniqueName(songId)).first().any { isActive(it.state) }
+
+    internal fun isActive(state: WorkInfo.State) =
+        state == WorkInfo.State.ENQUEUED || state == WorkInfo.State.RUNNING || state == WorkInfo.State.BLOCKED
 
     fun observe(context: Context, songId: Long): Flow<AnalysisUiState> =
         WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(uniqueName(songId)).map { infos ->

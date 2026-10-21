@@ -85,6 +85,7 @@ class AnalyseViewModelTest {
     }
 
     @Test fun `model missing routes to setup`() {
+        model.value = ModelState.Missing
         val vm = vm()
         work.value = AnalysisUiState(0f, AnalysisResult.Error(AnalysisError.MODEL_MISSING))
         assertEquals(AnalyseEvent.OpenSetup, vm.state.value.event)
@@ -92,9 +93,17 @@ class AnalyseViewModelTest {
         assertEquals("The speech model isn't downloaded yet.", AnalyseCopy.MODEL_MISSING)
     }
 
-    @Test fun `model becoming ready after missing re-enqueues`() {
+    @Test fun `stale model missing result with a ready model re-runs instead of routing`() {
         val vm = vm()
+        work.value = AnalysisUiState(0f, AnalysisResult.Error(AnalysisError.MODEL_MISSING))
+        assertEquals(listOf(7L), enqueued)
+        assertNull(vm.state.value.event)
+        assertEquals(AnalysePhase.Running, vm.state.value.phase)
+    }
+
+    @Test fun `model becoming ready after missing re-enqueues`() {
         model.value = ModelState.Missing
+        val vm = vm()
         work.value = AnalysisUiState(0f, AnalysisResult.Error(AnalysisError.MODEL_MISSING))
         vm.onEventHandled()
         assertTrue(enqueued.isEmpty())
