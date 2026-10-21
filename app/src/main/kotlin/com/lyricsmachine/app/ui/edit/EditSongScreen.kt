@@ -113,6 +113,7 @@ fun EditSongScreen(
                     },
                     releasePersistablePermission = container::releaseAudioPermission,
                     displayName = { queryDisplayName(app, Uri.parse(it)) },
+                    uriReadable = container::isUriReadable,
                 )
             }
         },
@@ -221,6 +222,9 @@ fun EditSongScreen(
                 }
                 state.audioUri?.let {
                     Text(state.audioName ?: it, style = MaterialTheme.typography.bodyMedium)
+                }
+                state.audioWarning?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
                 }
 
                 Button(

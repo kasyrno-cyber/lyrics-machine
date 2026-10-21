@@ -63,7 +63,8 @@ class AppContainer(val applicationContext: Context) {
         }
     }
 
-    private fun isUriReadable(uri: String): Boolean = try {
+    /** Whether [uri] can still be opened for reading. Blocking: call off Main. */
+    fun isUriReadable(uri: String): Boolean = try {
         applicationContext.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { true } ?: false
     } catch (e: CancellationException) {
         throw e

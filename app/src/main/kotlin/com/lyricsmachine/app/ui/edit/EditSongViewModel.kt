@@ -26,6 +26,7 @@ enum class SaveOutcome { SAVED_LYRICS_ONLY, SAVED_NEEDS_ANALYSIS, INVALID_EMPTY_
 
 object EditCopy {
     const val SAVE_FAILED = "Couldn't save this song."
+    const val AUDIO_UNREADABLE = "Can't open this audio file any more. Pick it again or remove it."
 }
 
 data class EditUiState(
@@ -35,6 +36,8 @@ data class EditUiState(
     val lyrics: String = "",
     val audioUri: String? = null,
     val audioName: String? = null,
+    /** Shown under the audio row when the stored audio can no longer be opened. */
+    val audioWarning: String? = null,
     val error: String? = null,
     val dirty: Boolean = false,
     /** True while an existing song is being loaded; the form is disabled. */
@@ -55,6 +58,8 @@ class EditSongViewModel(
     private val releasePersistablePermission: (Uri) -> Unit,
     private val displayName: (String) -> String? = { null },
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+    /** Whether the stored audio URI can still be opened; called on [ioDispatcher]. */
+    private val uriReadable: (String) -> Boolean = { true },
 ) : ViewModel() {
     private val _state = MutableStateFlow(EditUiState(loading = songId >= 0))
     val state: StateFlow<EditUiState> = _state.asStateFlow()
@@ -82,9 +87,10 @@ class EditSongViewModel(
         }
         existing = song
         val name = song.audioUri?.let { uri -> resolveName(uri) ?: uri }
+        val warning = song.audioUri?.let { uri -> if (isReadable(uri)) null else EditCopy.AUDIO_UNREADABLE }
         val loaded = EditUiState(
             title = song.title, artist = song.artist, language = song.language, lyrics = song.lyricsText,
-            audioUri = song.audioUri, audioName = name,
+            audioUri = song.audioUri, audioName = name, audioWarning = warning,
         )
         original = loaded
         _state.value = loaded
@@ -96,6 +102,14 @@ class EditSongViewModel(
         throw e
     } catch (_: Exception) {
         null
+    }
+
+    private suspend fun isReadable(uri: String): Boolean = try {
+        withContext(ioDispatcher) { uriReadable(uri) }
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        false
     }
 
     private fun edit(block: (EditUiState) -> EditUiState) = _state.update { s ->
@@ -135,13 +149,13 @@ class EditSongViewModel(
         val label = name ?: resolveName(uriString) ?: uriString
         val previous = _state.value.audioUri
         if (uriString != existing?.audioUri) sessionGrants += uriString
-        edit { it.copy(audioUri = uriString, audioName = label, error = null) }
+        edit { it.copy(audioUri = uriString, audioName = label, audioWarning = null, error = null) }
         if (previous != null && previous != uriString && sessionGrants.remove(previous)) releaseIfUnused(previous)
     }
 
     fun removeAudio(): Job = viewModelScope.launch {
         val previous = _state.value.audioUri
-        edit { it.copy(audioUri = null, audioName = null) }
+        edit { it.copy(audioUri = null, audioName = null, audioWarning = null) }
         // A stored URI is released on save; an unsaved pick can go right away.
         if (previous != null && sessionGrants.remove(previous)) releaseIfUnused(previous)
     }

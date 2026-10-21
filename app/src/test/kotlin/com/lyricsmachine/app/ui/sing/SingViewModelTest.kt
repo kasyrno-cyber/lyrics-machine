@@ -531,6 +531,11 @@ class SingViewModelTest {
         assertEquals(1, lives.single().started)
         assertEquals(expected, vm.state.value.message)
         assertTrue(playbacks.isEmpty())
+
+        // Once live tracking fails, "following you with the microphone" is no longer true.
+        lives.single().events.tryEmit(LiveEvent.EngineFailed)
+        assertEquals(SingMode.MANUAL, vm.state.value.mode)
+        assertNull(vm.state.value.message)
     }
 
     @Test fun `lyrics only song without audio shows no audio notice`() {

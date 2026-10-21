@@ -42,6 +42,7 @@ object SingCopy {
     const val LYRICS_ONLY = "Showing the lyrics only. Tap a line or use the arrows to follow along."
     const val MIC_FAILED = "The microphone couldn't be started. Tap a line to follow along manually."
     const val NOT_FOUND = "This song couldn't be found."
+    const val AUDIO_GONE = "This song's audio file can't be opened any more — following you with the microphone instead."
 }
 
 /** Text of the tracker state chip shown while listening live. */
@@ -170,7 +171,13 @@ class SingViewModel(
             return
         }
         val uri = song.audioUri
-        if (safely { songMode(songId) } == SongMode.AUDIO_READY && uri != null) enterPlayback(uri) else enterLive()
+        val songMode = safely { songMode(songId) }
+        when {
+            songMode == SongMode.AUDIO_READY && uri != null -> enterPlayback(uri)
+            // The repository reports LYRICS_ONLY for a song whose stored audio can no longer be opened.
+            songMode == SongMode.LYRICS_ONLY && uri != null -> enterLive(SingCopy.AUDIO_GONE)
+            else -> enterLive()
+        }
     }
 
     private suspend fun enterPlayback(uri: String) {
@@ -224,8 +231,11 @@ class SingViewModel(
         }
     }
 
-    /** Picks the model and asks the screen for the mic permission; MANUAL when no model is ready. */
-    private suspend fun enterLive() {
+    /**
+     * Picks the model and asks the screen for the mic permission; MANUAL when no model is ready. [notice] is
+     * shown while listening and kept when the session starts.
+     */
+    private suspend fun enterLive(notice: String? = null) {
         val chosen = safely { chooseModel(modelState) }
         if (chosen == null) {
             enterManual(SingCopy.NO_MODEL)
@@ -233,7 +243,7 @@ class SingViewModel(
         }
         liveSpec = chosen.first
         _state.update {
-            it.copy(mode = SingMode.LIVE, isRunning = false, requestMic = true, message = null, messageAction = null)
+            it.copy(mode = SingMode.LIVE, isRunning = false, requestMic = true, message = notice, messageAction = null)
         }
     }
 
@@ -299,9 +309,11 @@ class SingViewModel(
         live = session
         handledEvents.clear()
         _state.update {
+            // Clears stale notices (mic denied, playback failed) but keeps telling the user why the audio is gone.
+            val keep = it.message == SingCopy.AUDIO_GONE
             it.copy(
-                mode = SingMode.LIVE, isRunning = true, message = null, messageAction = null, requestMic = false,
-                canToggle = true,
+                mode = SingMode.LIVE, isRunning = true, message = if (keep) it.message else null,
+                messageAction = if (keep) it.messageAction else null, requestMic = false, canToggle = true,
             )
         }
         liveJob = viewModelScope.launch {
@@ -351,6 +363,8 @@ class SingViewModel(
             LiveEvent.EngineFailed -> {
                 showSnackbar(SingCopy.ENGINE_FAILED)
                 stopLive()
+                // "following you with the microphone" is no longer true.
+                if (_state.value.message == SingCopy.AUDIO_GONE) dismissMessage()
                 enterManual(null)
             }
         }
