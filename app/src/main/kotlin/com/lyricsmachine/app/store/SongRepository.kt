@@ -81,5 +81,7 @@ class SongRepository(
         return lines to words
     }
 
+    suspend fun countSongsWithAudio(uri: String): Int = dao.countSongsWithAudio(uri)
+
     suspend fun analysis(songId: Long): AnalysisEntity? = dao.analysis(songId)
 }

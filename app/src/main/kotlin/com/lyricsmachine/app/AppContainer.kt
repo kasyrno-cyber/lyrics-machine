@@ -1,6 +1,7 @@
 package com.lyricsmachine.app
 
 import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import androidx.room.Room
 import com.lyricsmachine.app.speech.ModelManager
@@ -31,6 +32,14 @@ class AppContainer(val applicationContext: Context) {
     val whisperThreads: Int = maxOf(1, minOf(4, Runtime.getRuntime().availableProcessors() - 1))
 
     fun createSpeechEngine(modelFile: File): WhisperCppEngine = WhisperCppEngine(modelFile, whisperThreads)
+
+    fun releaseAudioPermission(uri: Uri) {
+        try {
+            applicationContext.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        } catch (_: SecurityException) {
+            // Grant was already gone.
+        }
+    }
 
     private fun isUriReadable(uri: String): Boolean = try {
         applicationContext.contentResolver.openFileDescriptor(Uri.parse(uri), "r")?.use { true } ?: false

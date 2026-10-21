@@ -38,6 +38,9 @@ interface SongDao {
     @Query("DELETE FROM AnalysisEntity WHERE songId = :songId")
     suspend fun deleteAnalysis(songId: Long)
 
+    @Query("SELECT COUNT(*) FROM SongEntity WHERE audioUri = :uri")
+    suspend fun countSongsWithAudio(uri: String): Int
+
     @Query("SELECT * FROM AnalysisEntity WHERE songId = :songId")
     suspend fun analysis(songId: Long): AnalysisEntity?
 }

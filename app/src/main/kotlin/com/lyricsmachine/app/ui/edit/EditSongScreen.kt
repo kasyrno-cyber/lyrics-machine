@@ -22,6 +22,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -110,6 +111,7 @@ fun EditSongScreen(
                     takePersistablePermission = { uri ->
                         app.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                     },
+                    releasePersistablePermission = container::releaseAudioPermission,
                     displayName = { queryDisplayName(app, Uri.parse(it)) },
                 )
             }
@@ -123,14 +125,25 @@ fun EditSongScreen(
     var lyricsError by remember { mutableStateOf(false) }
 
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) scope.launch { vm.importFile(uri, queryDisplayName(context, uri)) }
+        if (uri != null) vm.importFile(uri)
     }
     val audioLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) vm.onAudioPicked(uri, queryDisplayName(context, uri))
+        if (uri != null) vm.onAudioPicked(uri)
+    }
+
+    LaunchedEffect(state.saveResult) {
+        when (val result = state.saveResult) {
+            null -> Unit
+            SaveOutcome.INVALID_EMPTY_TITLE -> titleError = true
+            SaveOutcome.INVALID_EMPTY_LYRICS -> lyricsError = true
+            SaveOutcome.SAVED_LYRICS_ONLY -> onSavedLyricsOnly()
+            SaveOutcome.SAVED_NEEDS_ANALYSIS -> onNeedsAnalysis(state.savedId)
+        }
+        if (result != null) vm.onSaveResultHandled()
     }
 
     LaunchedEffect(state.error) {
-        state.error?.let { snackbar.showSnackbar(it); vm.dismissError() }
+        if (!state.loadFailed) state.error?.let { snackbar.showSnackbar(it); vm.dismissError() }
     }
 
     fun requestBack() { if (state.dirty) showDiscard = true else onBack() }
@@ -150,7 +163,17 @@ fun EditSongScreen(
         snackbarHost = { SnackbarHost(snackbar) },
     ) { padding ->
         Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
-            Column(
+            if (state.loadFailed) {
+                Column(
+                    Modifier.widthIn(max = 720.dp).fillMaxWidth().padding(24.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text("Couldn't open this song.", style = MaterialTheme.typography.bodyLarge)
+                    Button(onClick = onBack, modifier = Modifier.heightIn(min = 48.dp)) { Text("Back") }
+                }
+            } else if (state.loading) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
+            } else Column(
                 Modifier.widthIn(max = 720.dp).fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
@@ -200,15 +223,9 @@ fun EditSongScreen(
 
                 Button(
                     onClick = {
-                        scope.launch {
-                            when (vm.save()) {
-                                SaveOutcome.INVALID_EMPTY_TITLE -> titleError = true
-                                SaveOutcome.INVALID_EMPTY_LYRICS -> lyricsError = true
-                                SaveOutcome.SAVED_LYRICS_ONLY -> onSavedLyricsOnly()
-                                SaveOutcome.SAVED_NEEDS_ANALYSIS -> onNeedsAnalysis(vm.lastSavedId)
-                            }
-                        }
+                        scope.launch { vm.save() }
                     },
+                    enabled = !state.saving,
                     modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
                 ) { Text("Save") }
             }
@@ -219,7 +236,7 @@ fun EditSongScreen(
         AlertDialog(
             onDismissRequest = { showDiscard = false },
             title = { Text("Discard changes?") },
-            confirmButton = { TextButton(onClick = { showDiscard = false; onBack() }) { Text("Discard") } },
+            confirmButton = { TextButton(onClick = { showDiscard = false; vm.discardChanges(); onBack() }) { Text("Discard") } },
             dismissButton = { TextButton(onClick = { showDiscard = false }) { Text("Keep editing") } },
         )
     }

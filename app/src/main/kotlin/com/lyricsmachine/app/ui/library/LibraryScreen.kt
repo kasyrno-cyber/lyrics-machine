@@ -42,6 +42,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.lyricsmachine.app.AppContainer
+import com.lyricsmachine.app.analysis.AnalysisWork
 import com.lyricsmachine.app.store.SongMode
 import com.lyricsmachine.app.store.SongSummary
 
@@ -60,7 +61,11 @@ fun LibraryScreen(
     onEditSong: (Long) -> Unit,
 ) {
     val vm: LibraryViewModel = viewModel(
-        factory = viewModelFactory { initializer { LibraryViewModel(container.songRepository) } },
+        factory = viewModelFactory { initializer { LibraryViewModel(
+                    container.songRepository,
+                    cancelAnalysis = { AnalysisWork.cancel(container.applicationContext, it) },
+                    releasePersistablePermission = container::releaseAudioPermission,
+                ) } },
     )
     val state by vm.state.collectAsState()
     var pendingDelete by remember { mutableStateOf<SongSummary?>(null) }
