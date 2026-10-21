@@ -57,12 +57,6 @@ object AnalysisWork {
     internal fun isActive(state: WorkInfo.State) =
         state == WorkInfo.State.ENQUEUED || state == WorkInfo.State.RUNNING || state == WorkInfo.State.BLOCKED
 
-    fun observe(context: Context, songId: Long): Flow<AnalysisUiState> =
-        WorkManager.getInstance(context).getWorkInfosForUniqueWorkFlow(uniqueName(songId)).map { infos ->
-            val info = infos.lastOrNull()
-            if (info == null) AnalysisUiState(0f, null) else toUiState(info.state, info.progress, info.outputData)
-        }
-
     internal fun toUiState(state: WorkInfo.State, progress: Data, output: Data): AnalysisUiState = when (state) {
         WorkInfo.State.CANCELLED -> AnalysisUiState(0f, AnalysisResult.Error(AnalysisError.CANCELLED))
         WorkInfo.State.FAILED -> AnalysisUiState(0f, AnalysisResult.Error(AnalysisError.ENGINE_FAILED))
