@@ -519,4 +519,25 @@ class SingViewModelTest {
         vm.tapLine(0)
         assertNull(vm.state.value.currentLine)
     }
+
+    @Test fun `audio that can no longer be opened tells the user and follows the microphone`() {
+        mode = SongMode.LYRICS_ONLY // the repository reports LYRICS_ONLY when the stored audio is unreadable
+        val vm = vm()
+        val expected = "This song's audio file can't be opened any more — following you with the microphone instead."
+        assertEquals(expected, vm.state.value.message)
+        assertEquals(SingMode.LIVE, vm.state.value.mode)
+        assertTrue(vm.state.value.requestMic)
+        vm.onMicPermissionResult(true)
+        assertEquals(1, lives.single().started)
+        assertEquals(expected, vm.state.value.message)
+        assertTrue(playbacks.isEmpty())
+    }
+
+    @Test fun `lyrics only song without audio shows no audio notice`() {
+        song = song!!.copy(audioUri = null)
+        mode = SongMode.LYRICS_ONLY
+        val vm = vm()
+        assertEquals(SingMode.LIVE, vm.state.value.mode)
+        assertNull(vm.state.value.message)
+    }
 }

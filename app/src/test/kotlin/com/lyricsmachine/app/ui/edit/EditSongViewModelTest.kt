@@ -55,6 +55,7 @@ class EditSongViewModelTest {
     private val released = mutableListOf<Uri>()
     private var grantFails = false
     private var enqueueFails = false
+    private val unreadable = mutableSetOf<String>()
 
     private fun vm(songId: Long = -1L, repository: SongRepository = repo) = EditSongViewModel(
         songId = songId,
@@ -64,6 +65,7 @@ class EditSongViewModelTest {
         takePersistablePermission = { if (grantFails) throw SecurityException("no grant"); persisted += it },
         releasePersistablePermission = { released += it },
         ioDispatcher = UnconfinedTestDispatcher(),
+        uriReadable = { it !in unreadable },
     )
 
     private suspend fun EditSongViewModel.loaded() = state.first { !it.loading }
@@ -306,5 +308,47 @@ class EditSongViewModelTest {
         assertEquals(SaveOutcome.SAVED_NEEDS_ANALYSIS, v.state.value.saveResult)
         v.onSaveResultHandled()
         assertNull(v.state.value.saveResult)
+    }
+
+    @Test fun `save failure resets saving, shows an error and does not navigate or enqueue`() = runBlocking {
+        val v = vm()
+        v.fill()
+        v.onAudioPicked(Uri.parse("content://media/audio/9"), "take9.mp3").join()
+        db.close() // the next upsert throws, like a full disk would
+        assertEquals(SaveOutcome.FAILED, v.save())
+        val s = v.state.value
+        assertTrue(!s.saving)
+        assertEquals("Couldn't save this song.", s.error)
+        assertEquals(SaveOutcome.FAILED, s.saveResult)
+        assertTrue(enqueued.isEmpty())
+        assertTrue(released.isEmpty()) // the pick is kept so the user can try again
+        db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext<Context>(), AppDatabase::class.java)
+            .allowMainThreadQueries().build()
+    }
+
+    @Test fun `stored audio that can no longer be opened shows a warning under the audio row`() = runBlocking {
+        val id = seed(audio = "content://media/audio/gone")
+        unreadable += "content://media/audio/gone"
+        val v = vm(id)
+        val s = v.loaded()
+        assertEquals("content://media/audio/gone", s.audioUri)
+        assertEquals("Can't open this audio file any more. Pick it again or remove it.", s.audioWarning)
+        v.removeAudio().join()
+        assertNull(v.state.value.audioWarning)
+    }
+
+    @Test fun `readable stored audio shows no warning`() = runBlocking {
+        val id = seed(audio = "content://media/audio/1")
+        val v = vm(id)
+        assertNull(v.loaded().audioWarning)
+    }
+
+    @Test fun `picking audio again clears the unreadable warning`() = runBlocking {
+        val id = seed(audio = "content://media/audio/gone")
+        unreadable += "content://media/audio/gone"
+        val v = vm(id)
+        v.loaded()
+        v.onAudioPicked(Uri.parse("content://media/audio/2"), "fresh.mp3").join()
+        assertNull(v.state.value.audioWarning)
     }
 }
