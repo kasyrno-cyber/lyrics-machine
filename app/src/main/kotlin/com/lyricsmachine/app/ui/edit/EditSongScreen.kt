@@ -132,7 +132,8 @@ fun EditSongScreen(
     }
 
     LaunchedEffect(state.saveResult) {
-        when (val result = state.saveResult) {
+        val result = state.saveResult
+        when (result) {
             null -> Unit
             SaveOutcome.INVALID_EMPTY_TITLE -> titleError = true
             SaveOutcome.INVALID_EMPTY_LYRICS -> lyricsError = true
