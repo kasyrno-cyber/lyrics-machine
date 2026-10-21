@@ -59,6 +59,27 @@ jobs:
           if-no-files-found: error
 
 
+  # TEMPORARY (Task 10): pins Whisper model SHA-256/sizes from the Hugging Face API. Remove after pinning.
+  pin-model-hashes:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch model hashes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -sL https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/main > tree.json
+          {
+            echo '### Model hashes (HF tree API)'
+            echo '```'
+            jq -r '.[] | select(.path=="ggml-base-q5_1.bin" or .path=="ggml-tiny-q5_1.bin") | "\(.path) oid=\(.lfs.oid) size=\(.lfs.size)"' tree.json || echo "jq failed"
+            echo '--- all ggml files ---'
+            jq -r '.[] | select(.path|startswith("ggml-")) | "\(.path) \(.lfs.size // .size)"' tree.json || head -c 2000 tree.json
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY" > hashes.md
+          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -f body="$(cat hashes.md)"
+
   release:
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
