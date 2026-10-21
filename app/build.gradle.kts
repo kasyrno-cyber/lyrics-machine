@@ -2,7 +2,7 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
+    id("org.jetbrains.kotlin.android") // KGP is already on the classpath via the root kotlin.jvm plugin
     alias(libs.plugins.kotlin.compose)
 }
 
