@@ -579,3 +579,21 @@ Behaviour (spec §4.4):
 - [ ] **Step 4:** Mode 2: lyrics-only song, music on an external speaker → tracker locks within one or two lines of singing, trails ≤ ~2 s, survives an instrumental break, doesn't jump to an earlier chorus.
 - [ ] **Step 5:** Try one English, one Malay and one Indonesian song, plus a mixed-language one. Note any tuning needed in `TrackerConfig` and file it as a follow-up.
 - [ ] **Step 6:** Commit any fixes; tag `v0.1.0`.
+
+---
+
+## Amendment A1 — Part B builds on GitHub Actions (2026-10-21)
+
+Part B is built and verified by GitHub Actions, not a local Android Studio, because the authoring environment cannot reach the Android SDK/NDK, GitHub source downloads or Hugging Face. These amendments override the Part B task text where they differ.
+
+- **Task 8 adds CI.** `.github/workflows/android.yml` runs on push and pull_request: checkout, `actions/setup-java@v4` (temurin 17), `android-actions/setup-android@v3`, `sdkmanager "ndk;27.2.12479018" "cmake;3.22.1"`, then `./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug --stacktrace`. It uploads `app/build/outputs/apk/debug/app-debug.apk` as artifact `lyrics-machine-debug-apk`, and on `main` also publishes it as GitHub pre-release `latest-debug` (asset `lyrics-machine.apk`) via `softprops/action-gh-release@v2`, so the user can download it on a phone. `settings.gradle.kts` adds `google()` to both plugin and dependency repositories. The "Step 2 install on emulator" check becomes "CI green and the APK artifact exists".
+- **Stable signing.** A dedicated debug keystore `app/lyrics-debug.keystore` (alias `lyricsdebug`, store and key password `lyricsdebug`) is committed and used for the `debug` build type, so new APKs install over old ones. It is for personal sideloading only; release signing is out of scope.
+- **Task 10 changes:**
+  - whisper.cpp is pulled by CMake `FetchContent` (`GIT_REPOSITORY https://github.com/ggml-org/whisper.cpp`, `GIT_TAG v1.7.6`, `GIT_SHALLOW TRUE`) instead of a git submodule.
+  - Model SHA-256 values and sizes are pinned from the Hugging Face API (`https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/main`, field `lfs.oid` / `lfs.size`), fetched in a temporary CI step whose output the implementer reads, and then that step is removed.
+  - The instrumented `WhisperCppEngineTest` and the developer-recorded WAV assets are dropped from CI (no device, no recordings). Engine behaviour is verified in Task 16 on the user's devices.
+- **Task 9 addition (final-review M5, spec §4.1):** core gets `object LrcTimings { fun fromLyrics(lyrics: Lyrics, endMs: Long? = null): List<LineTiming> }`. Each non-spacer line with `lrcStartMs` gets start = its lrcStartMs and end = the next timed line's start (or `endMs`, or start + 4000 ms for the last line). Lines without lrcStartMs get no timing.
+  - `SongRepository.loadTimings` falls back to it when no analysis exists.
+  - A song with audio and LRC timings but no analysis counts as `AUDIO_READY`.
+  - Unit-tested in core.
+- **Verification commands** in Part B steps run in CI. An implementer pushes the branch, waits for the workflow run, and reads the result (`gh api repos/kasyrno-cyber/lyrics-machine/actions/runs?branch=<branch>` and the PR's check runs). Local runs are limited to `:core:test`.
