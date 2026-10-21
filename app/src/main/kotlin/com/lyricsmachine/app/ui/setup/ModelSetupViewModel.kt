@@ -34,16 +34,17 @@ data class ModelSetupUiState(
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ModelSetupViewModel(
-    private val state: (ModelSpec) -> Flow<ModelState>,
+    state: (ModelSpec) -> Flow<ModelState>,
     private val ensure: suspend (ModelSpec) -> Unit,
 ) : ViewModel() {
+    private val stateOf = state
     private val spec = MutableStateFlow(ModelSpec.BASE)
     private val _state = MutableStateFlow(ModelSetupUiState())
     val state: StateFlow<ModelSetupUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
-            spec.flatMapLatest { s -> state(s).also { _state.update { u -> u.copy(spec = s) } } }
+            spec.flatMapLatest { s -> stateOf(s).also { _state.update { u -> u.copy(spec = s) } } }
                 .collect { m ->
                     _state.update { u ->
                         u.copy(
