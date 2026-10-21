@@ -314,7 +314,8 @@ class EditSongViewModelTest {
         val v = vm()
         v.fill()
         v.onAudioPicked(Uri.parse("content://media/audio/9"), "take9.mp3").join()
-        db.close() // the next upsert throws, like a full disk would
+        // The next upsert throws an SQLiteException, as a full disk would.
+        db.openHelper.writableDatabase.execSQL("DROP TABLE SongEntity")
         assertEquals(SaveOutcome.FAILED, v.save())
         val s = v.state.value
         assertTrue(!s.saving)
@@ -322,8 +323,6 @@ class EditSongViewModelTest {
         assertEquals(SaveOutcome.FAILED, s.saveResult)
         assertTrue(enqueued.isEmpty())
         assertTrue(released.isEmpty()) // the pick is kept so the user can try again
-        db = Room.inMemoryDatabaseBuilder(ApplicationProvider.getApplicationContext<Context>(), AppDatabase::class.java)
-            .allowMainThreadQueries().build()
     }
 
     @Test fun `stored audio that can no longer be opened shows a warning under the audio row`() = runBlocking {
