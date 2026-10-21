@@ -233,7 +233,7 @@ class EditSongViewModelTest {
     }
 
     @Test fun `save before load completes saves the loaded data`() = runBlocking {
-        val id = seed(analysed = false)
+        val id = seed(audio = null, analysed = false)
         val mainThread = java.util.concurrent.Executors.newSingleThreadExecutor()
         Dispatchers.setMain(mainThread.asCoroutineDispatcher())
         try {
