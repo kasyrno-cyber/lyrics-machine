@@ -125,6 +125,77 @@ object Aligner {
         return Alignment(lines, words, matchedCount.toDouble() / n)
     }
 
+    /**
+     * Smith-Waterman local alignment of [heardTokens] (normalised) against
+     * lyrics.tokens[fromToken until toToken]. Null if fewer than 2 matched words.
+     */
+    fun locate(lyrics: Lyrics, heardTokens: List<String>, fromToken: Int, toToken: Int, preferAfter: Int): LocateResult? {
+        val refs = lyrics.tokens
+        val from = fromToken.coerceIn(0, refs.size)
+        val to = toToken.coerceIn(0, refs.size)
+        val ht = heardTokens.filter { it.isNotEmpty() }
+        val m = ht.size
+        val n = to - from
+        if (n <= 0 || m == 0) return null
+
+        val w = m + 1
+        val score = DoubleArray((n + 1) * w)
+        val move = ByteArray((n + 1) * w) // 0 = path starts here
+        val diagMatch = BooleanArray((n + 1) * w)
+        val colBest = DoubleArray(n + 1)
+        val colBestRow = IntArray(n + 1)
+        for (j in 1..n) {
+            val lt = refs[from + j - 1].token
+            for (i in 1..m) {
+                val idx = j * w + i
+                val s = Similarity.score(lt, ht[i - 1])
+                val isMatch = s >= Similarity.MATCH_THRESHOLD
+                var best = score[(j - 1) * w + i - 1] + if (isMatch) MATCH_MULTIPLIER * s else MISMATCH_SCORE
+                var mv = DIAG
+                val lg = score[(j - 1) * w + i] + LYRIC_GAP_SCORE
+                if (lg > best) { best = lg; mv = LYRIC_GAP }
+                val hg = score[j * w + i - 1] + HEARD_GAP_SCORE
+                if (hg > best) { best = hg; mv = HEARD_GAP }
+                if (best <= 0.0) { best = 0.0; mv = 0 }
+                score[idx] = best
+                move[idx] = mv
+                diagMatch[idx] = isMatch
+                if (best > colBest[j]) { colBest[j] = best; colBestRow[j] = i }
+            }
+        }
+
+        val top = colBest.max()
+        if (top <= 0.0) return null
+        // Tie-break: smallest end >= preferAfter, else largest end below it.
+        var chosen = -1
+        for (j in 1..n) {
+            if (top - colBest[j] > 1e-9) continue
+            val end = from + j
+            chosen = when {
+                chosen < 0 -> j
+                end >= preferAfter && from + chosen < preferAfter -> j
+                end >= preferAfter && from + chosen >= preferAfter -> chosen // keep smallest
+                from + chosen >= preferAfter -> chosen
+                else -> j // both below: keep largest
+            }
+        }
+
+        var j = chosen
+        var i = colBestRow[chosen]
+        var matched = 0
+        while (j > 0 && i > 0 && score[j * w + i] > 0.0) {
+            when (move[j * w + i]) {
+                DIAG -> { if (diagMatch[j * w + i]) matched++; j--; i-- }
+                LYRIC_GAP -> j--
+                HEARD_GAP -> i--
+                else -> break
+            }
+        }
+        if (matched < 2) return null
+        val confidence = (colBest[chosen] / (MATCH_MULTIPLIER * m)).coerceIn(0.0, 1.0)
+        return LocateResult(from + chosen, matched, confidence)
+    }
+
     private fun interpolate(starts: LongArray, ends: LongArray, matched: BooleanArray) {
         val n = starts.size
         var k = 0
