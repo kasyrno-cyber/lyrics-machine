@@ -98,7 +98,7 @@ class ModelManagerTest {
     }
 
     @Test fun `network error reports Failed and allows retry`() = runBlocking {
-        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START))
+        server.enqueue(ok().setSocketPolicy(SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
         server.enqueue(ok())
         val mm = manager()
         mm.ensure(spec)
@@ -106,6 +106,7 @@ class ModelManagerTest {
         assertTrue("state was $failed", failed is ModelState.Failed)
         assertTrue((failed as ModelState.Failed).message.isNotBlank())
         assertFalse(File(dir, spec.fileName).exists())
+        assertFalse(File(dir, spec.fileName + ".part").exists())
 
         mm.ensure(spec)
         assertTrue(mm.state(spec).value is ModelState.Ready)

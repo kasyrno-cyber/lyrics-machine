@@ -17,6 +17,25 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+        externalNativeBuild {
+            cmake {
+                // Debug whisper.cpp is far too slow to use; always build the native code optimised.
+                arguments += listOf("-DCMAKE_BUILD_TYPE=Release")
+            }
+        }
+    }
+
+    ndkVersion = "27.2.12479018"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     signingConfigs {

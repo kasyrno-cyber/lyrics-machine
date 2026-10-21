@@ -37,6 +37,12 @@ jobs:
           chmod +x ./gradlew
           ./gradlew :core:test :app:testDebugUnitTest :app:assembleDebug --stacktrace 2>&1 | tee gradle.log
 
+      - name: Check native libraries in APK
+        run: |
+          unzip -l app/build/outputs/apk/debug/app-debug.apk | grep 'lib/' | tee native-libs.txt
+          { echo '### Native libraries in APK'; echo '```'; cat native-libs.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          grep -q 'lib/arm64-v8a/liblyricsjni.so' native-libs.txt || { echo "::error::lib/arm64-v8a/liblyricsjni.so missing from APK"; exit 1; }
+
       - name: Report failure
         if: failure()
         env:
@@ -45,7 +51,7 @@ jobs:
           {
             echo '### Gradle failure (error lines, then log tail)'
             echo '```'
-            grep -E '^e: |FAILED|What went wrong' -A12 gradle.log 2>&1 | grep -vE '^[[:space:]]+at |^:app:|^  :' | cut -c1-300 | head -90 || true
+            grep -E '^e: |FAILED|What went wrong|error:|CMake Error' -A12 gradle.log 2>&1 | grep -vE '^[[:space:]]+at |^:app:|^  :' | cut -c1-300 | head -90 || true
             echo '--- tail ---'
             grep -vE '^[[:space:]]+at |^[[:space:]]*:app:' gradle.log 2>&1 | cut -c1-300 | tail -n 40 || echo "(no gradle.log: failure happened before the Gradle step)"
             echo '```'
@@ -58,27 +64,6 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-
-  # TEMPORARY (Task 10): pins Whisper model SHA-256/sizes from the Hugging Face API. Remove after pinning.
-  pin-model-hashes:
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-    steps:
-      - name: Fetch model hashes
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          curl -sL https://huggingface.co/api/models/ggerganov/whisper.cpp/tree/main > tree.json
-          {
-            echo '### Model hashes (HF tree API)'
-            echo '```'
-            jq -r '.[] | select(.path=="ggml-base-q5_1.bin" or .path=="ggml-tiny-q5_1.bin") | "\(.path) oid=\(.lfs.oid) size=\(.lfs.size)"' tree.json || echo "jq failed"
-            echo '--- all ggml files ---'
-            jq -r '.[] | select(.path|startswith("ggml-")) | "\(.path) \(.lfs.size // .size)"' tree.json || head -c 2000 tree.json
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY" > hashes.md
-          gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -f body="$(cat hashes.md)"
 
   release:
     needs: build
