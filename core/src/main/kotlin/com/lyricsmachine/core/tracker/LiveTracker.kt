@@ -74,12 +74,23 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
     }
 
     /**
-     * Token bounds [from, to) of the normal search window around [currentLine]. Spacer lines have no
-     * tokens, so each bound walks forward to the nearest non-spacer line.
+     * Token bounds [from, to) of the normal search window around [currentLine]. Only non-spacer lines
+     * count: the window starts `windowLinesBack` lyric lines before [currentLine] and ends before the
+     * (`windowLinesAhead` + 1)-th lyric line after it (or at the end of the song).
      */
-    internal fun searchWindow(currentLine: Int): Pair<Int, Int> {
-        val from = firstTokenAtOrAfterLine(maxOf(0, currentLine - config.windowLinesBack)) ?: tokenCount
-        val to = firstTokenAtOrAfterLine(currentLine + config.windowLinesAhead + 1) ?: tokenCount
+    internal fun searchWindow(currentLine: Int): Pair<Int, Int> = searchWindow(currentLine, currentLine)
+
+    /** Window whose back edge is measured from [backLine] and ahead edge from [aheadLine]. */
+    private fun searchWindow(backLine: Int, aheadLine: Int): Pair<Int, Int> {
+        var start = backLine
+        var counted = 0
+        var l = backLine - 1
+        while (l >= 0 && counted < config.windowLinesBack) {
+            if (!lyrics.lines[l].isSpacer) { start = l; counted++ }
+            l--
+        }
+        val from = firstTokenAtOrAfterLine(start) ?: tokenCount
+        val to = firstTokenOfNthLyricLineAfter(aheadLine, config.windowLinesAhead + 1) ?: tokenCount
         return from to to
     }
 
@@ -129,17 +140,28 @@ class LiveTracker(private val lyrics: Lyrics, private val config: TrackerConfig 
     }
 
     /**
-     * Extrapolation may not pass the first token of line `lastLockLine + maxCoastLines + 1`. It stops just
-     * short of it so the displayed line never goes beyond `lastLockLine + maxCoastLines`.
+     * Extrapolation may not pass the first token of the (`maxCoastLines` + 1)-th lyric (non-spacer) line
+     * after `lastLockLine`. It stops just short of it so the display never goes more than `maxCoastLines`
+     * lyric lines past the last lock.
      */
     private fun coastCap(): Double {
-        val boundary = firstTokenAtOrAfterLine(lastLockLine + config.maxCoastLines + 1)
+        val boundary = firstTokenOfNthLyricLineAfter(lastLockLine, config.maxCoastLines + 1)
             ?: return tokenCount.toDouble()
         return maxOf(basePos, boundary - CAP_EPSILON)
     }
 
     private fun firstTokenAtOrAfterLine(line: Int): Int? {
         for (l in maxOf(0, line) until lyrics.lines.size) lyrics.firstTokenOfLine(l)?.let { return it }
+        return null
+    }
+
+    /** First token of the [n]-th non-spacer line strictly after [line] (n >= 1); null if there is none. */
+    private fun firstTokenOfNthLyricLineAfter(line: Int, n: Int): Int? {
+        var seen = 0
+        for (l in maxOf(0, line + 1) until lyrics.lines.size) {
+            val first = lyrics.firstTokenOfLine(l) ?: continue
+            if (++seen == n) return first
+        }
         return null
     }
 

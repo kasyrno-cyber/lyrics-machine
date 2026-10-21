@@ -167,21 +167,49 @@ class LiveTrackerTest {
         assertEquals(7.0, t.snapshot(1_000).tokenPosition, 1e-9)
     }
 
-    @Test fun `search window walks over spacer lines`() {
+    @Test fun `search window counts non-spacer lines only`() {
         // lines: 0 [0-2], 1 spacer, 2 spacer, 3 [3-5], 4 [6-8], 5 spacer, 6 [9-11], 7 [12-14]
         val l = LyricsParser.parse(
             "hills hold dawn\n\n[Chorus]\nrivers run wide\nlanterns burn low\n\nwe walk home\nunder silver skies"
         )
         assertEquals(15, l.tokens.size)
         val t = LiveTracker(l)
-        assertEquals(3 to 15, t.searchWindow(3)) // back to spacer line 2 → walk forward to line 3
-        assertEquals(0 to 9, t.searchWindow(0)) // first non-spacer line at or after line 5 is line 6
+        assertEquals(0 to 15, t.searchWindow(3)) // one lyric line back is line 0, across two spacers
+        assertEquals(0 to 15, t.searchWindow(0)) // only 3 lyric lines follow, fewer than 4 → size
         assertEquals(3 to 15, t.searchWindow(4))
         val narrow = LiveTracker(l, TrackerConfig(windowLinesAhead = 1))
-        assertEquals(3 to 9, narrow.searchWindow(3)) // after line 4 is spacer 5 → line 6
-        assertEquals(3 to 9, narrow.searchWindow(4))
-        assertEquals(9 to 15, narrow.searchWindow(6)) // back to spacer line 5 → line 6; nothing after line 7 → size
-        assertEquals(0 to 3, narrow.searchWindow(0)) // first non-spacer line at or after line 2 is line 3
+        assertEquals(0 to 9, narrow.searchWindow(3)) // 2nd lyric line after 3 is line 6
+        assertEquals(3 to 12, narrow.searchWindow(4)) // 2nd lyric line after 4 is line 7
+        assertEquals(6 to 15, narrow.searchWindow(6)) // back over spacer 5 to line 4; nothing after line 7 → size
+        assertEquals(0 to 6, narrow.searchWindow(0)) // 2nd lyric line after 0 is line 4
+    }
+
+    @Test fun `double-spaced lyrics get the same window and coast cap as single-spaced`() {
+        val rows = listOf(
+            "amber fields wake slow", "copper bells ring out", "salt winds cross the bay",
+            "paper boats sail far", "ember skies fade soft", "willow shade runs long", "harbor lamps glow dim",
+        )
+        val single = LyricsParser.parse(rows.joinToString("\n"))
+        val double = LyricsParser.parse(rows.joinToString("\n\n"))
+        assertEquals(single.tokens.map { it.token }, double.tokens.map { it.token })
+        val ts = LiveTracker(single)
+        val td = LiveTracker(double)
+        for (k in rows.indices) assertEquals(ts.searchWindow(k), td.searchWindow(2 * k), "lyric line $k")
+
+        val s1 = ts.onChunk(0, say(rows[1]), audioPresent = true)
+        val d1 = td.onChunk(0, say(rows[1]), audioPresent = true)
+        assertEquals(s1.tokenPosition, d1.tokenPosition, 1e-9)
+        var s = s1
+        var d = d1
+        for (now in 2_000L..9_000L step 1_000) {
+            s = ts.onChunk(now, emptyList(), audioPresent = true)
+            d = td.onChunk(now, emptyList(), audioPresent = true)
+        }
+        assertEquals(TrackerState.Coasting, d.state)
+        assertEquals(s.tokenPosition, d.tokenPosition, 1e-9) // capped at the same token
+        assertEquals(3, s.lineIndex) // last lock on line 1, at most 2 lyric lines further
+        assertEquals(6, d.lineIndex) // same lyric line in the double-spaced layout
+        assertTrue(d.tokenPosition < 17.0, "pos ${d.tokenPosition}") // lyric line 4 starts at token 17
     }
 
     @Test fun `zero-token lyrics do not crash`() {
