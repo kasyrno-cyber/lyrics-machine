@@ -12,7 +12,6 @@ import kotlinx.coroutines.flow.combine
 class SongRepository(
     private val db: AppDatabase,
     private val uriReadable: (String) -> Boolean,
-    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     private val dao = db.songDao()
 
@@ -58,7 +57,7 @@ class SongRepository(
     suspend fun saveAlignment(songId: Long, alignment: Alignment, modelName: String) = db.withTransaction {
         dao.deleteTimings(songId)
         dao.deleteAnalysis(songId)
-        dao.insertAnalysis(AnalysisEntity(songId, alignment.matchRatio, modelName, clock()))
+        dao.insertAnalysis(AnalysisEntity(songId, alignment.matchRatio, modelName, System.currentTimeMillis()))
         if (alignment.lines.isNotEmpty()) {
             val rows = alignment.lines.map { TimingEntity(songId, it.lineIndex, -1, it.startMs, it.endMs, true) } +
                 alignment.words.map { TimingEntity(songId, it.lineIndex, it.wordIndex, it.startMs, it.endMs, it.matched) }
