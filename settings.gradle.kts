@@ -18,6 +18,8 @@ rootProject.name = "lyrics-machine"
 
 include(":core")
 // :app needs an Android SDK; include it only when one is available (CI sets ANDROID_HOME) so :core:test runs anywhere.
-if (System.getenv("ANDROID_HOME") != null || file("local.properties").exists()) {
+val hasAndroidSdk = System.getenv("ANDROID_HOME") != null || file("local.properties").exists()
+gradle.extra["hasAndroidSdk"] = hasAndroidSdk
+if (hasAndroidSdk) {
     include(":app")
 }

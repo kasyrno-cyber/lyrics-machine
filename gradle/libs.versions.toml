@@ -2,6 +2,7 @@
 kotlin = "2.1.20"
 junit = "5.11.4"
 coroutines = "1.10.2"
+agp = "8.7.3"
 composeBom = "2024.12.01"
 activityCompose = "1.9.3"
 navCompose = "2.8.5"
@@ -22,3 +23,8 @@ compose-ui = { module = "androidx.compose.ui:ui" }
 compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
 compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 
+
+# Plugin classpath artifacts (see root build.gradle.kts)
+android-gradle-plugin = { module = "com.android.tools.build:gradle", version.ref = "agp" }
+kotlin-gradle-plugin = { module = "org.jetbrains.kotlin:kotlin-gradle-plugin", version.ref = "kotlin" }
+compose-compiler-gradle-plugin = { module = "org.jetbrains.kotlin:compose-compiler-gradle-plugin", version.ref = "kotlin" }
