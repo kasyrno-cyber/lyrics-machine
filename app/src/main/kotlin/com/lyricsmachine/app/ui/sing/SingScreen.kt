@@ -278,6 +278,7 @@ fun SingScreen(container: AppContainer, songId: Long, manual: Boolean, onBack: (
                     verses = state.verses,
                     currentVerse = state.currentVerse,
                     onTapLine = vm::tapLine,
+                    onTapPreview = vm::tapPreview,
                     modifier = Modifier.fillMaxWidth().weight(1f),
                 )
             }

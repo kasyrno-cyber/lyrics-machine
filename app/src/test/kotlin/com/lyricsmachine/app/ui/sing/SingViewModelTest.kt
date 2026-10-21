@@ -493,7 +493,6 @@ class SingViewModelTest {
         vm.nudge(1)
         assertTrue(playbacks.single().seeks.isEmpty())
         assertEquals(0, vm.state.value.currentVerse)
-        assertEquals(0, vm.state.value.currentLine)
     }
 
     @Test fun `playback tap on an untimed line seeks to the next timed line`() {

@@ -21,7 +21,6 @@ import com.lyricsmachine.core.playback.TimingLookup
 import com.lyricsmachine.core.tracker.TrackerSnapshot
 import com.lyricsmachine.core.tracker.TrackerState
 import kotlin.coroutines.cancellation.CancellationException
-import kotlin.math.floor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -64,8 +63,8 @@ data class Notice(val id: Long, val text: String)
 
 /**
  * What the Sing screen shows: the verse at [currentVerse] (of [verses]) and a preview of the next one. It is
- * derived from [currentLine] (verse 0 while that is null). [currentWord]/[wordProgress]/[wordTimed] come from
- * the trackers and are no longer drawn. [message] is a persistent notice (with an
+ * derived from [currentLine] (verse 0 while that is null); [previewLine] is the first line of the next verse,
+ * or null on the last one. [message] is a persistent notice (with an
  * optional [messageAction]); [snackbar] is the head of a queue of one-off notices, acknowledged by id with
  * [SingViewModel.snackbarShown]. [canToggle] is false once playback has failed (no dead Play button).
  * [sentToSettings] is true while the user is in app settings after tapping the mic-denied notice. [requestMic] asks the screen to check/request RECORD_AUDIO and report back
@@ -76,15 +75,13 @@ data class SingUiState(
     val verses: List<Verse> = emptyList(),
     val currentVerse: Int? = null,
     val currentLine: Int? = null,
-    val currentWord: Int? = null,
-    val wordProgress: Float = 0f,
+    val previewLine: Int? = null,
     val mode: SingMode = SingMode.MANUAL,
     val isRunning: Boolean = false,
     val trackerState: TrackerState? = null,
     val message: String? = null,
     val title: String = "",
     val loading: Boolean = true,
-    val wordTimed: Boolean = false,
     val messageAction: MessageAction? = null,
     val snackbar: Notice? = null,
     val requestMic: Boolean = false,
@@ -144,6 +141,7 @@ class SingViewModel(
     private var language: Lang? = null
     private var lyricLines: List<Int> = emptyList()
     private var verses: List<Verse> = emptyList()
+    private var timedLines: Set<Int> = emptySet()
 
     private var playback: PlaybackLike? = null
     private var playbackJob: Job? = null
@@ -203,12 +201,12 @@ class SingViewModel(
         }
         playback = pb
         playbackErrorShown = false
-        val wordTimed = words.isNotEmpty()
-        upd { it.copy(mode = SingMode.PLAYBACK, wordTimed = wordTimed, isRunning = false, canToggle = true) }
+        timedLines = lines.map { it.lineIndex }.toSet()
+        upd { it.copy(mode = SingMode.PLAYBACK, isRunning = false, canToggle = true) }
         playbackJob = viewModelScope.launch {
             combine(pb.position, pb.isPlaying, pb.positionMs, pb.durationMs, pb.error) { p, playing, ms, dur, err ->
                 PlaybackFrame(p, playing, ms, dur, err)
-            }.collect { f -> applyPlayback(f, wordTimed) }
+            }.collect { f -> applyPlayback(f) }
         }
     }
 
@@ -216,14 +214,11 @@ class SingViewModel(
         val position: PlaybackPosition, val playing: Boolean, val ms: Long, val duration: Long?, val error: String?,
     )
 
-    private fun applyPlayback(f: PlaybackFrame, wordTimed: Boolean) {
+    private fun applyPlayback(f: PlaybackFrame) {
         upd {
             if (it.mode != SingMode.PLAYBACK) return@upd it
             it.copy(
                 currentLine = f.position.lineIndex,
-                currentWord = f.position.wordIndex,
-                wordProgress = f.position.wordProgress,
-                wordTimed = wordTimed,
                 isRunning = f.playing && f.error == null,
                 positionMs = f.ms,
                 durationMs = f.duration,
@@ -260,9 +255,6 @@ class SingViewModel(
                 mode = SingMode.MANUAL,
                 isRunning = false,
                 trackerState = null,
-                wordTimed = false,
-                currentWord = null,
-                wordProgress = 0f,
                 requestMic = false,
                 currentLine = it.currentLine ?: lyricLines.firstOrNull(),
                 message = message ?: it.message,
@@ -329,31 +321,15 @@ class SingViewModel(
         }
         if (resumeLine != null && resumeLine != lyricLines.firstOrNull()) {
             session.jumpTo(resumeLine)
-            upd { it.copy(currentLine = resumeLine, currentWord = null, wordProgress = 0f) }
+            upd { it.copy(currentLine = resumeLine) }
         }
     }
 
     private fun applySnapshot(session: LiveLike, snap: TrackerSnapshot) {
         if (session !== live) return
-        val advancing = snap.state == TrackerState.Locked || snap.state == TrackerState.Coasting
-        var word: Int? = null
-        var progress = 0f
-        val tokens = lyrics.tokens
-        if (advancing && tokens.isNotEmpty()) {
-            val pos = snap.tokenPosition
-            val idx = floor(pos).toInt().coerceIn(0, tokens.lastIndex)
-            val ref = tokens[idx]
-            if (ref.lineIndex == snap.lineIndex) {
-                word = ref.wordIndex
-                progress = if (pos >= tokens.size) 1f else (pos - floor(pos)).toFloat().coerceIn(0f, 1f)
-            }
-        }
         upd {
             it.copy(
                 currentLine = snap.lineIndex,
-                currentWord = word,
-                wordProgress = progress,
-                wordTimed = advancing,
                 trackerState = snap.state,
             )
         }
@@ -383,7 +359,7 @@ class SingViewModel(
         liveJob?.cancel()
         liveJob = null
         try { session.stop() } catch (_: Exception) {}
-        upd { it.copy(isRunning = false, trackerState = null, wordTimed = false, currentWord = null) }
+        upd { it.copy(isRunning = false, trackerState = null) }
     }
 
     private fun closePlayback() {
@@ -416,14 +392,47 @@ class SingViewModel(
         if (verses.isEmpty() || delta == 0) return
         val from = _state.value.currentVerse ?: 0
         val target = (from + delta).coerceIn(0, verses.lastIndex)
-        moveTo(verses[target].lineIndices.first())
+        if (!seeksByTiming()) {
+            moveTo(verses[target].lineIndices.first())
+            return
+        }
+        // The player only seeks to timed lines: take the first timed line of the target verse, else keep going
+        // in the nudge direction; do nothing when nothing is timed that way.
+        val step = if (delta > 0) 1 else -1
+        var v = target
+        while (v in verses.indices) {
+            verses[v].lineIndices.firstOrNull { it in timedLines }?.let { moveTo(it); return }
+            v += step
+        }
     }
 
-    /** Moves to [index]; a spacer moves to the next lyric line (or the last one when none follows). */
+    /**
+     * Moves to [index]; a spacer moves to the next lyric line (or the last one when none follows). In PLAYBACK
+     * an untimed line moves to the next timed line, else the nearest timed line before it.
+     */
     fun tapLine(index: Int) {
         if (lyricLines.isEmpty()) return
-        moveTo(lyricLines.firstOrNull { it >= index } ?: lyricLines.last())
+        val line = lyricLines.firstOrNull { it >= index } ?: lyricLines.last()
+        if (!seeksByTiming()) {
+            moveTo(line)
+            return
+        }
+        val target = lyricLines.firstOrNull { it >= line && it in timedLines }
+            ?: lyricLines.lastOrNull { it < line && it in timedLines }
+            ?: return
+        moveTo(target)
     }
+
+    /** First line of the verse after the current one, or null on the last verse. */
+    fun nextVersePreviewLine(): Int? = _state.value.previewLine
+
+    /** The preview was tapped: jump to [nextVersePreviewLine] the way [tapLine] does. */
+    fun tapPreview() {
+        nextVersePreviewLine()?.let { tapLine(it) }
+    }
+
+    /** True when moving must land on a timed line because the player seeks to line starts. */
+    private fun seeksByTiming() = _state.value.mode == SingMode.PLAYBACK && _state.value.canToggle
 
     private fun moveTo(line: Int) {
         when (_state.value.mode) {
@@ -431,7 +440,7 @@ class SingViewModel(
             SingMode.LIVE -> live?.jumpTo(line)
             SingMode.MANUAL -> Unit
         }
-        upd { it.copy(currentLine = line, currentWord = null, wordProgress = 0f) }
+        upd { it.copy(currentLine = line) }
     }
 
     /** "Use microphone instead": stops playback and starts LIVE, or explains that no model is downloaded. */
@@ -450,7 +459,7 @@ class SingViewModel(
             upd {
                 it.copy(
                     mode = SingMode.LIVE, isRunning = false, requestMic = true, message = null, messageAction = null,
-                    wordTimed = false, currentWord = null, canToggle = true,
+                    canToggle = true,
                 )
             }
         }
@@ -498,13 +507,16 @@ class SingViewModel(
     private fun upd(transform: (SingUiState) -> SingUiState) {
         _state.update { old ->
             val n = transform(old)
+            if (n.currentLine == old.currentLine && n.verses === old.verses) {
+                return@update n.copy(currentVerse = old.currentVerse, previewLine = old.previewLine)
+            }
             val line = n.currentLine
             val verse = when {
                 n.verses.isEmpty() -> null
                 line == null -> 0
                 else -> Verses.verseOfLine(n.verses, line) ?: n.verses.lastIndex
             }
-            if (verse == n.currentVerse) n else n.copy(currentVerse = verse)
+            n.copy(currentVerse = verse, previewLine = verse?.let { n.verses.getOrNull(it + 1)?.lineIndices?.first() })
         }
     }
 

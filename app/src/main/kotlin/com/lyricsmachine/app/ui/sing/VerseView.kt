@@ -36,7 +36,7 @@ private const val CROSSFADE_MS = 250
  * Karaoke lyrics as a verse: every line of the verse at [currentVerse] in large bold text (no highlighting), its
  * label (e.g. "[Chorus]") small and muted above, and a faded preview of the next verse's first line below. A
  * verse change crossfades; a verse taller than the viewport scrolls and starts at the top. Tapping a line calls
- * [onTapLine] with that line; tapping the preview calls it with the next verse's first line. Sizes are in sp, so
+ * [onTapLine] with that line; tapping the preview calls [onTapPreview]. Sizes are in sp, so
  * the system font scale applies.
  */
 @Composable
@@ -45,6 +45,7 @@ fun VerseView(
     verses: List<Verse>,
     currentVerse: Int?,
     onTapLine: (Int) -> Unit,
+    onTapPreview: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (verses.isEmpty()) {
@@ -107,7 +108,7 @@ fun VerseView(
                             .fillMaxWidth()
                             .padding(top = 24.dp)
                             .alpha(0.5f)
-                            .clickable(onClickLabel = "Go to next verse") { onTapLine(nextFirst.index) }
+                            .clickable(onClickLabel = "Go to next verse") { onTapPreview() }
                             .padding(vertical = 8.dp),
                     )
                 }
