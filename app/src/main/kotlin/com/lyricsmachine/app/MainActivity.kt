@@ -3,21 +3,12 @@ package com.lyricsmachine.app
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.CenterAlignedTopAppBar
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
 import androidx.navigation.NavOptionsBuilder
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
@@ -28,6 +19,7 @@ import com.lyricsmachine.app.ui.analyse.AnalyseScreen
 import com.lyricsmachine.app.ui.edit.EditSongScreen
 import com.lyricsmachine.app.ui.library.LibraryScreen
 import com.lyricsmachine.app.ui.setup.ModelSetupScreen
+import com.lyricsmachine.app.ui.sing.SingScreen
 import com.lyricsmachine.app.ui.theme.LyricsMachineTheme
 import kotlinx.coroutines.launch
 
@@ -167,14 +159,13 @@ private fun AppNav(container: AppContainer) {
                 navArgument("songId") { type = NavType.LongType },
                 navArgument("manual") { type = NavType.BoolType; defaultValue = false },
             ),
-        ) { PlaceholderScreen("sing") }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun PlaceholderScreen(title: String) {
-    Scaffold(topBar = { CenterAlignedTopAppBar(title = { Text(title) }) }) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {}
+        ) { entry ->
+            SingScreen(
+                container = container,
+                songId = entry.arguments?.getLong("songId") ?: -1L,
+                manual = entry.arguments?.getBoolean("manual") ?: false,
+                onBack = { nav.popBackStack() },
+            )
+        }
     }
 }
