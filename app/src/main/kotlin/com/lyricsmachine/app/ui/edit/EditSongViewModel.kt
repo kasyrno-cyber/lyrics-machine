@@ -7,6 +7,7 @@ import com.lyricsmachine.app.store.SongEntity
 import com.lyricsmachine.app.store.SongRepository
 import com.lyricsmachine.core.Lang
 import com.lyricsmachine.core.lyrics.LyricsParser
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -42,9 +43,10 @@ class EditSongViewModel(
     private var original = EditUiState()
     private var existing: SongEntity? = null
 
-    init {
-        if (songId >= 0) viewModelScope.launch { load() }
-    }
+    private val loadJob: Job? = if (songId >= 0) viewModelScope.launch { load() } else null
+
+    /** Completes once an existing song has been loaded into [state]. */
+    suspend fun awaitLoaded() { loadJob?.join() }
 
     private suspend fun load() {
         val song = repository.get(songId)
@@ -58,7 +60,7 @@ class EditSongViewModel(
             audioUri = song.audioUri, audioName = song.audioUri?.let { displayName(it) ?: it },
         )
         original = loaded
-        _state.value = loaded
+        _state.update { if (it.dirty) it.copy(loading = false, dirty = isDirty(it)) else loaded }
     }
 
     private fun edit(block: (EditUiState) -> EditUiState) = _state.update { s ->
@@ -111,6 +113,7 @@ class EditSongViewModel(
     }
 
     suspend fun save(): SaveOutcome {
+        awaitLoaded()
         val s = _state.value
         if (s.title.isBlank()) return SaveOutcome.INVALID_EMPTY_TITLE
         if (s.lyrics.isBlank() || LyricsParser.parse(s.lyrics).tokens.isEmpty()) return SaveOutcome.INVALID_EMPTY_LYRICS
