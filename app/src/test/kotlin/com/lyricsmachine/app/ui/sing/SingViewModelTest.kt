@@ -195,7 +195,7 @@ class SingViewModelTest {
         assertTrue(playbacks.isEmpty())
         assertEquals(1, vm.state.value.currentLine)
         vm.nudge(1)
-        assertEquals(2, vm.state.value.currentLine)
+        assertEquals(5, vm.state.value.currentLine) // a whole verse
         vm.nudge(-1)
         assertEquals(1, vm.state.value.currentLine)
         vm.toggle() // no-op in manual
@@ -203,14 +203,17 @@ class SingViewModelTest {
         assertEquals(SingMode.MANUAL, vm.state.value.mode)
     }
 
-    @Test fun `nudge clamps to first and last line`() {
+    @Test fun `nudge clamps to first and last verse`() {
         val vm = manualVm()
         vm.nudge(-1)
-        assertEquals(1, vm.state.value.currentLine) // not the "[Intro]" spacer
+        assertEquals(1, vm.state.value.currentLine) // first line of verse 0, not the "[Intro]" spacer
+        assertEquals(0, vm.state.value.currentVerse)
         repeat(10) { vm.nudge(1) }
-        assertEquals(6, vm.state.value.currentLine) // not the trailing "(hum)" spacer
+        assertEquals(5, vm.state.value.currentLine) // first line of the last verse
+        assertEquals(1, vm.state.value.currentVerse)
         vm.nudge(-100)
         assertEquals(1, vm.state.value.currentLine)
+        assertEquals(0, vm.state.value.currentVerse)
     }
 
     @Test fun `tap line seeks playback`() {
@@ -390,8 +393,8 @@ class SingViewModelTest {
         vm.toggle()
         assertEquals(0, playbacks.single().plays)
         assertFalse(vm.state.value.isRunning)
-        vm.nudge(1) // acts like manual: moves the line, no seek on the broken player
-        assertEquals(1, vm.state.value.currentLine)
+        vm.nudge(1) // acts like manual: moves the verse, no seek on the broken player
+        assertEquals(5, vm.state.value.currentLine)
         assertTrue(playbacks.single().seeks.isEmpty())
         vm.useMicrophone()
         assertEquals(SingMode.LIVE, vm.state.value.mode)
@@ -409,14 +412,52 @@ class SingViewModelTest {
         assertFalse(s.isRunning)
     }
 
-    @Test fun `nudge skips spacers`() {
+    @Test fun `nudge moves by verse to its first lyric line`() {
         val vm = manualVm()
-        vm.nudge(1)
-        assertEquals(2, vm.state.value.currentLine)
+        vm.tapLine(2) // second line of verse 0
         vm.nudge(1)
         assertEquals(5, vm.state.value.currentLine) // skips blank 3 and "[Chorus]" 4
         vm.nudge(-1)
-        assertEquals(2, vm.state.value.currentLine)
+        assertEquals(1, vm.state.value.currentLine) // first line of the previous verse
+    }
+
+    @Test fun `verses are exposed in state`() {
+        val vm = manualVm()
+        assertEquals(listOf(listOf(1, 2), listOf(5, 6)), vm.state.value.verses.map { it.lineIndices })
+        assertEquals(listOf<String?>("[Intro]", "[Chorus]"), vm.state.value.verses.map { it.label })
+    }
+
+    @Test fun `currentVerse follows currentLine across a verse boundary`() {
+        val vm = vm()
+        val pos = playbacks.single().position
+        pos.value = PlaybackPosition(2, null, 0f)
+        assertEquals(0, vm.state.value.currentVerse)
+        pos.value = PlaybackPosition(5, null, 0f)
+        assertEquals(1, vm.state.value.currentVerse)
+        pos.value = PlaybackPosition(6, null, 0f)
+        assertEquals(1, vm.state.value.currentVerse)
+    }
+
+    @Test fun `null currentLine shows the first verse`() {
+        val vm = vm()
+        playbacks.single().position.value = PlaybackPosition(null, null, 0f)
+        assertNull(vm.state.value.currentLine)
+        assertEquals(0, vm.state.value.currentVerse)
+    }
+
+    @Test fun `tapping the next verse preview goes to its first line`() {
+        val vm = vm()
+        val next = vm.state.value.verses[1].lineIndices.first()
+        vm.tapLine(next) // what the preview does
+        assertEquals(listOf(5), playbacks.single().seeks)
+        assertEquals(1, vm.state.value.currentVerse)
+    }
+
+    @Test fun `nudge in live jumps to the verse start`() {
+        val vm = liveVm()
+        vm.nudge(1)
+        assertEquals(listOf(5), lives.single().jumps)
+        assertEquals(1, vm.state.value.currentVerse)
     }
 
     @Test fun `nudge in playback seeks to the next lyric line`() {
