@@ -68,11 +68,13 @@ private fun AppNav(container: AppContainer) {
 
     /**
      * Opens the [kind] screen for [songId], or the model setup screen first when [needsModel] says a model is
-     * missing. Ignores taps while a previous check is still running.
+     * missing. Ignores taps while a previous check is still running, and navigates only if the screen the tap
+     * came from is still showing when the check finishes.
      */
     fun go(kind: String, songId: Long, needsModel: suspend () -> Boolean = { true }, options: NavOptionsBuilder.() -> Unit = {}) {
         if (gating) return
         gating = true
+        val from = nav.currentBackStackEntry?.id
         scope.launch {
             try {
                 val setup = needsModel() && container.needsModelSetup()
@@ -81,7 +83,8 @@ private fun AppNav(container: AppContainer) {
                     kind == Routes.KIND_SING -> Routes.sing(songId)
                     else -> Routes.analyse(songId)
                 }
-                nav.navigate(route, options)
+                // The user may have left the screen (back, another tap) while the check ran: then do nothing.
+                if (nav.currentBackStackEntry?.id == from) nav.navigate(route, options)
             } finally {
                 gating = false
             }
