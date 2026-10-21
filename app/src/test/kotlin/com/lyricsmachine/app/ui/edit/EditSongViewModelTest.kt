@@ -12,6 +12,7 @@ import com.lyricsmachine.core.align.Alignment
 import com.lyricsmachine.core.align.LineTiming
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -92,7 +93,7 @@ class EditSongViewModelTest {
         v.fill()
         assertEquals(SaveOutcome.SAVED_LYRICS_ONLY, v.save())
         assertTrue(enqueued.isEmpty())
-        val saved = kotlinx.coroutines.flow.first(repo.observeLibrary())
+        val saved = repo.observeLibrary().first()
         assertEquals(1, saved.size)
     }
 
