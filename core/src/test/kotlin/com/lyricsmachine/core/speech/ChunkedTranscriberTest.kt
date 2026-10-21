@@ -2,7 +2,8 @@ package com.lyricsmachine.core.speech
 
 import com.lyricsmachine.core.Lang
 import org.junit.jupiter.api.Test
-import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -66,19 +67,23 @@ class ChunkedTranscriberTest {
     }
 
     @Test fun `cancellation stops between chunks`() = runTest {
-        val gate = CompletableDeferred<Unit>()
-        val engine = FakeEngine { if (it == 0) gate.await() }
-        val job = launch {
-            ChunkedTranscriber(engine).transcribe(
-                generateSequence { FloatArray(10) }.take(5), 50, null
-            ) {}
+        var job: Job? = null
+        // Non-cooperative engine (like a JNI call): cancels during call 0, never suspends.
+        val engine = FakeEngine { if (it == 0) job!!.cancel() }
+        var failure: Throwable? = null
+        job = launch {
+            try {
+                ChunkedTranscriber(engine).transcribe(
+                    generateSequence { FloatArray(10) }.take(5), 50, null
+                ) {}
+            } catch (e: Throwable) {
+                failure = e
+                throw e
+            }
         }
-        testScheduler.runCurrent()
-        assertEquals(1, engine.calls)
-        job.cancel()
-        gate.complete(Unit)
         job.join()
         assertTrue(job.isCancelled)
+        assertTrue(failure is CancellationException)
         assertEquals(1, engine.calls)
     }
 }
