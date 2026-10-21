@@ -64,4 +64,22 @@ class LocateTest {
         assertNull(Aligner.locate(song, emptyList(), 0, song.tokens.size, 0))
         assertNull(Aligner.locate(song, listOf("", ""), 0, song.tokens.size, 0))
     }
+
+    @Test fun `heard words joined to match one lyric token`() {
+        val l = LyricsParser.parse("kupu-kupu terbang tinggi\nsayangku jangan pergi")
+        val r = Aligner.locate(l, listOf("kupu", "kupu", "terbang", "tinggi"), 0, l.tokens.size, 0)
+        assertNotNull(r)
+        assertEquals(3, r!!.endTokenIndex)
+        assertEquals(3, r.matchedCount) // the join counts as one matched lyric token
+        assertEquals(3, r.longestRun)
+    }
+
+    @Test fun `one heard word split across two lyric tokens`() {
+        val l = LyricsParser.parse("bintang malam\nsayang ku jangan pergi")
+        val r = Aligner.locate(l, listOf("sayangku", "jangan", "pergi"), 0, l.tokens.size, 0)
+        assertNotNull(r)
+        assertEquals(6, r!!.endTokenIndex)
+        assertEquals(4, r.matchedCount) // split covers two lyric tokens
+        assertEquals(4, r.longestRun)
+    }
 }

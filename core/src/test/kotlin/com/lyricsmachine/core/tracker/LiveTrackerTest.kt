@@ -190,6 +190,13 @@ class LiveTrackerTest {
         assertEquals(26.0, strong.tokenPosition, 1e-9)
     }
 
+    @Test fun `locks when the singer splits a reduplicated word`() {
+        val l = LyricsParser.parse("kupu-kupu terbang tinggi\nsayangku jangan pergi")
+        val s = LiveTracker(l).onChunk(2_000, say("kupu kupu terbang tinggi"), audioPresent = true)
+        assertEquals(TrackerState.Locked, s.state)
+        assertEquals(3.0, s.tokenPosition, 1e-9)
+    }
+
     @Test fun `user jump overrides position`() {
         val t = tracker()
         t.onChunk(0, say(opening), audioPresent = true)
